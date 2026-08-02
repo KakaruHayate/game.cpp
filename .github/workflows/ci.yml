@@ -210,7 +210,7 @@ jobs:
           test -s "$PKG/config.json"
           test -s "$PKG/oudep.yaml"
           grep -Fx "id: game-ggml-medium" "$PKG/oudep.yaml"
-          grep -Fx "      path: $BIN" "$PKG/oudep.yaml"
+          grep -Fx "    path: $BIN" "$PKG/oudep.yaml"
           ls -lh "$PKG/"
           echo "PKG_DIR=$PKG" >> "$GITHUB_ENV"
 
