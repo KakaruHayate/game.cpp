@@ -6,7 +6,7 @@ name: ci
 #   linux-x64-vulkan   — Ubuntu, Vulkan backend
 #   macos-arm64-metal  — Apple Silicon, Metal backend
 #   macos-x64-metal    — Intel Mac, Metal backend (cross-compiled on ARM runner)
-#   windows-x64-cpu    — Windows, CPU backend (Vulkan .exe uploaded separately)
+#   windows-x64-vulkan — Windows, Vulkan backend
 #
 # On tag push, artifacts are bundled into a GitHub Release.
 
@@ -22,8 +22,71 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  prepare-model:
+    name: prepare medium GGUF
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements.txt
+
+      - name: Download and verify medium checkpoint
+        run: |
+          curl -fL --retry 5 --retry-all-errors \
+            -o GAME-1.0-medium.zip \
+            https://github.com/openvpi/GAME/releases/download/v1.0.0/GAME-1.0-medium.zip
+          echo "8c5b3e531e2905b935e664e2f533921cd637243770fab5282413bdb5051ca60c  GAME-1.0-medium.zip" \
+            | sha256sum --check --strict
+          unzip -q GAME-1.0-medium.zip
+
+      - name: Convert checkpoint and prepare backend config
+        run: |
+          mkdir -p model
+          python scripts/convert_pt_to_gguf.py \
+            --model-dir GAME-1.0-medium \
+            -o model/game_medium.gguf
+          cat > model/config.json <<'EOF'
+          {
+            "samplerate": 44100,
+            "timestep": 0.01,
+            "languages": {
+              "en": 1,
+              "ja": 2,
+              "yue": 3,
+              "zh": 4
+            },
+            "loop": true
+          }
+          EOF
+
+      - name: Verify model files
+        run: |
+          test -s model/game_medium.gguf
+          python -m json.tool model/config.json >/dev/null
+          ls -lh model/
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-ggml-medium-model
+          path: model
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     name: ${{ matrix.name }}
+    needs: prepare-model
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -61,93 +124,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install Vulkan SDK
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff
         with:
-          python-version: "3.11"
-          cache: pip
+          version: 1.4.309.0
+          cache: true
 
-      - name: Install Python deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install torch numpy gguf pyyaml
+      - name: Verify Vulkan shader compiler
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: glslc --version
 
-      - name: Install Vulkan SDK (Linux only)
-        if: runner.os == 'Linux'
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
-        with:
-          vulkan-query-version: latest
-          vulkan-components: Vulkan-Headers,Vulkan-Loader
-          vulkan-use-cache: true
-      - name: Add glslc to PATH and fix VULKAN_SDK (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          # Find the actual glslc binary and update VULKAN_SDK to its parent.
-          GLSC=$(find "${{ github.workspace }}"/_vulkan_build -name "glslc" -type f 2>/dev/null | head -1)
-          if [ -z "$GLSC" ]; then
-            GLSC=$(find "${{ github.workspace }}" -name "glslc" -type f 2>/dev/null | head -1)
-          fi
-          if [ -n "$GLSC" ]; then
-            BIN_DIR=$(dirname "$GLSC")
-            SDK_ROOT=$(cd "$BIN_DIR/.." && pwd)
-            echo "VULKAN_SDK=$SDK_ROOT" >> "$GITHUB_ENV"
-            echo "$BIN_DIR" >> "$GITHUB_PATH"
-            echo "VULKAN_SDK=$SDK_ROOT (glslc=$GLSC)"
-          else
-            echo "::error::glslc not found after Vulkan SDK install"
-            exit 1
-          fi
-          which glslc && glslc --version
-
-          # macos-x64-metal: disable native CPU detection for cross-compile
       - name: Disable native CPU for cross-compile (macOS x86_64 only)
         if: matrix.name == 'macos-x64-metal'
-        shell: bash
-        run: |
-          echo "GGML_NATIVE=OFF" >> "$GITHUB_ENV"
-
-      - name: Install Vulkan SDK (Windows only)
-        if: runner.os == 'Windows'
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
-        with:
-          vulkan-query-version: latest
-          vulkan-components: Vulkan-Headers,Vulkan-Loader
-          vulkan-use-cache: true
-      - name: Add glslc to PATH (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          # Find glslc.exe in the SDK tree or VULKAN_SDK.
-          $vulkan = [Environment]::GetEnvironmentVariable('VULKAN_SDK')
-          if (-not $vulkan -or -not (Test-Path $vulkan)) {
-            $vulkan = Get-ChildItem 'C:\VulkanSDK' -Directory -ErrorAction SilentlyContinue
-              | Sort-Object Name -Descending | Select-Object -First 1
-          }
-          if ($vulkan) {
-            Write-Host "VULKAN_SDK=$vulkan"
-            $bin = Join-Path $vulkan 'Bin'
-            if (Test-Path (Join-Path $bin 'glslc.exe')) {
-              echo "VULKAN_SDK=$vulkan" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-              echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-              Get-Command glslc | Select-Object Source
-            } else {
-              Write-Host "glslc not found in $bin, searching recursively..."
-              $found = Get-ChildItem -Recurse -Filter 'glslc.exe' -Path $vulkan -ErrorAction SilentlyContinue
-                | Select-Object -First 1
-              if ($found) {
-                $bin = $found.DirectoryName
-                echo "$bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-                Get-Command glslc | Select-Object Source
-              } else {
-                Write-Error "glslc.exe not found under VULKAN_SDK"
-                exit 1
-              }
-            }
-          } else {
-            Write-Error "Vulkan SDK not found"
-            exit 1
-          }
+        run: echo "GGML_NATIVE=OFF" >> "$GITHUB_ENV"
 
       - name: Cache CMake FetchContent
         uses: actions/cache@v4
@@ -172,7 +162,13 @@ jobs:
       - name: Verify binary
         run: |
           ls -la build/bin/
-          build/bin/game_ggml_cli${{ matrix.pkg_ext }} --version || true
+          build/bin/game_ggml_cli${{ matrix.pkg_ext }} --version
+
+      - name: Download medium GGUF
+        uses: actions/download-artifact@v4
+        with:
+          name: game-ggml-medium-model
+          path: model
 
       - name: Package .oudep
         run: |
@@ -186,11 +182,17 @@ jobs:
 
           # Shared libraries
           find build/bin -maxdepth 1 -name "${{ matrix.lib_glob }}" -exec cp {} "$PKG/" \;
+          compgen -G "$PKG/${{ matrix.lib_glob }}" >/dev/null
 
-          # macOS: include pre-compiled Metal shader cache if present
+          # macOS: include the pre-compiled Metal shader cache.
           if [ "${{ runner.os }}" = "macOS" ]; then
-            find build -name "default.metallib" -exec cp {} "$PKG/" \; 2>/dev/null || true
+            METALLIB=$(find build -name "default.metallib" -type f -print -quit)
+            test -n "$METALLIB"
+            cp "$METALLIB" "$PKG/"
           fi
+
+          # Model and OpenUtau backend config.
+          cp model/game_medium.gguf model/config.json "$PKG/"
 
           # oudep manifest
           cat > "$PKG/oudep.yaml" <<EOF
@@ -202,7 +204,14 @@ jobs:
               path: $BIN
           EOF
 
-          ls -la "$PKG/"
+          # OpenUtau expects all of these files at the package root.
+          test -x "$PKG/$BIN"
+          test -s "$PKG/game_medium.gguf"
+          test -s "$PKG/config.json"
+          test -s "$PKG/oudep.yaml"
+          grep -Fx "id: game-ggml-medium" "$PKG/oudep.yaml"
+          grep -Fx "      path: $BIN" "$PKG/oudep.yaml"
+          ls -lh "$PKG/"
           echo "PKG_DIR=$PKG" >> "$GITHUB_ENV"
 
       - name: Upload build artifact
@@ -213,9 +222,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # Windows x64 Vulkan (.exe) is built locally and uploaded manually to the
-  # release.  This job downloads the locally-built artifact from the release
-  # and re-bundles it alongside the CI-built packages.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
@@ -226,33 +232,34 @@ jobs:
       - name: Download CI artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: game_ggml-*
           path: artifacts
-
-      - name: Download local Windows Vulkan artifact
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: actions/download-artifact@v4
-        with:
-          name: game_ggml-windows-x64-vulkan
-          path: artifacts
-        continue-on-error: true
 
       - name: Re-package all artifacts as .oudep
         run: |
           set -euo pipefail
-          cd artifacts
-          # Each top-level dir is a platform package already containing
-          # the binary + libs + oudep.yaml.  Zip it.
-          for dir in */; do
-            name="${dir%/}"
-            zip -r "../${name}.oudep.zip" "$dir"
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            test -s "$dir/oudep.yaml"
+            test -s "$dir/game_medium.gguf"
+            test -s "$dir/config.json"
+            (
+              cd "$dir"
+              zip -r "../../${name}.oudep" .
+            )
           done
-          cd ..
-          ls -la *.zip
-          echo "ARTIFACTS_COUNT=$(ls *.zip 2>/dev/null | wc -l)" >> "$GITHUB_ENV"
+
+          # PackageManager requires oudep.yaml at the archive root.
+          for package in *.oudep; do
+            test "$(unzip -Z1 "$package" | grep -c '^oudep.yaml$')" -eq 1
+            test "$(unzip -Z1 "$package" | grep -c '^game_medium.gguf$')" -eq 1
+            test "$(unzip -Z1 "$package" | grep -c '^config.json$')" -eq 1
+          done
+          ls -lh *.oudep
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: "*.zip"
+          files: "*.oudep"
           generate_release_notes: true
-          fail_on_unmatched_files: false  # tolerate missing local Windows upload
+          fail_on_unmatched_files: true
