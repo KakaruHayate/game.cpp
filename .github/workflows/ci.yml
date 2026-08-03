@@ -230,17 +230,7 @@ jobs:
             done
             if python -m pip install --quiet pefile; then
               echo "== PE import tables =="
-              python - <<'PYEOF'
-import pefile
-for path in ["build/bin/game_ggml_cli.exe", "build/bin/ggml-cuda.dll"]:
-    try:
-        pe = pefile.PE(path, fast_load=True)
-        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_IMPORT']])
-        deps = [e.dll.decode() for e in pe.DIRECTORY_ENTRY_IMPORT]
-        print(path, "->", ", ".join(deps))
-    except Exception as exc:
-        print(path, "ERROR:", exc)
-PYEOF
+              python scripts/dump_pe_imports.py build/bin/game_ggml_cli.exe build/bin/ggml-cuda.dll
             else
               echo "(pefile unavailable, skipping import dump)"
             fi
