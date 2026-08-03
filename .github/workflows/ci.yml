@@ -215,16 +215,50 @@ jobs:
           set -euo pipefail
           ls -la build/bin/
 
-          # The Windows CUDA installer exposes CUDA_PATH, but its runtime DLL
-          # directory is not reliably inherited by Git Bash. ggml-cuda links to
-          # cuBLAS dynamically, so make the Toolkit DLLs visible for this smoke test.
+          # The CUDA CLI links ggml-cuda.dll directly (see src/backend.cpp), so
+          # startup requires the Toolkit runtime DLLs. Git Bash does not always
+          # forward its PATH to the Windows loader, so we dump the PE import
+          # tables and run through PowerShell with a native Windows PATH.
           if [ "${{ matrix.backend }}" = "cuda" ] && [ "${{ runner.os }}" = "Windows" ]; then
+            echo "== CUDA_PATH=$CUDA_PATH =="
             CUDA_BIN="$(cygpath -u "$CUDA_PATH")/bin"
-            test -f "$CUDA_BIN/cublas64_12.dll"
-            export PATH="$CUDA_BIN:$PATH"
+            echo "== CUDA Toolkit bin (first 60 entries) =="
+            ls -1 "$CUDA_BIN" 2>/dev/null | head -60 || echo "(cannot list $CUDA_BIN)"
+            echo "== required runtime DLLs =="
+            for dll in cudart64_12.dll cublas64_12.dll cublasLt64_12.dll; do
+              if [ -f "$CUDA_BIN/$dll" ]; then echo "OK       $dll"; else echo "MISSING  $dll"; fi
+            done
+            if python -m pip install --quiet pefile; then
+              echo "== PE import tables =="
+              python - <<'PYEOF'
+import pefile
+for path in ["build/bin/game_ggml_cli.exe", "build/bin/ggml-cuda.dll"]:
+    try:
+        pe = pefile.PE(path, fast_load=True)
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_IMPORT']])
+        deps = [e.dll.decode() for e in pe.DIRECTORY_ENTRY_IMPORT]
+        print(path, "->", ", ".join(deps))
+    except Exception as exc:
+        print(path, "ERROR:", exc)
+PYEOF
+            else
+              echo "(pefile unavailable, skipping import dump)"
+            fi
           fi
 
-          build/bin/game_ggml_cli${{ matrix.pkg_ext }} --version
+          # PowerShell uses the native Windows DLL search path (no MSYS path
+          # conversion) and reports the exact module the loader cannot resolve,
+          # instead of bash's opaque exit code 127.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            powershell -NoProfile -ExecutionPolicy Bypass -Command '
+              $env:PATH = "$env:CUDA_PATH\bin;" + $env:PATH
+              $exe = Join-Path (Get-Location) "build/bin/game_ggml_cli${{ matrix.pkg_ext }}"
+              & $exe --version
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            '
+          else
+            build/bin/game_ggml_cli${{ matrix.pkg_ext }} --version
+          fi
 
       - name: Download medium GGUF
         uses: actions/download-artifact@v4
