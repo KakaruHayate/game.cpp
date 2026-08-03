@@ -41,7 +41,9 @@ if(MSVC)
         set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}/bin")
         set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}/lib")
     endforeach()
-    add_compile_options(/utf-8)
+    # NVCC treats a bare /utf-8 as an input path. Keep this MSVC option on
+    # native C/C++ sources; CUDA sources already contain ASCII identifiers.
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
 endif()
 
 if(MSVC)

@@ -105,7 +105,7 @@ jobs:
           - os: ubuntu-22.04
             name: linux-x64-cuda
             backend: cuda
-            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-real\;80-real\;86-real\;89-real'
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75'
             build_jobs: 2
             pkg_ext: ""
             lib_glob: "libggml*.so*"
@@ -137,7 +137,7 @@ jobs:
           - os: windows-2022
             name: windows-x64-cuda
             backend: cuda
-            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-real\;80-real\;86-real\;89-real'
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75'
             build_jobs: 2
             pkg_ext: ".exe"
             lib_glob: "ggml*.dll"
