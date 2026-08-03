@@ -8,6 +8,7 @@ name: ci
 #   macos-arm64-metal  — Apple Silicon, Metal backend
 #   macos-x64-metal    — Intel Mac, Metal backend (cross-compiled on ARM runner)
 #   windows-x64-vulkan — Windows, Vulkan backend
+#   windows-x64-cuda   — Windows Server 2022, CUDA backend (CUDA 12.6)
 #
 # On tag push, artifacts are bundled into a GitHub Release.
 
@@ -97,13 +98,15 @@ jobs:
             name: linux-x64-vulkan
             backend: vulkan
             cmake_extra: "-DGAME_GGML_VULKAN=ON"
+            build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.so*"
 
           - os: ubuntu-22.04
             name: linux-x64-cuda
             backend: cuda
-            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75\;80\;86\;89'
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-real\;80-real\;86-real\;89-real'
+            build_jobs: 2
             pkg_ext: ""
             lib_glob: "libggml*.so*"
 
@@ -111,6 +114,7 @@ jobs:
             name: macos-arm64-metal
             backend: metal
             cmake_extra: "-DGAME_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
+            build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.dylib"
 
@@ -118,6 +122,7 @@ jobs:
             name: macos-x64-metal
             backend: metal
             cmake_extra: "-DGAME_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=x86_64"
+            build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.dylib"
 
@@ -125,6 +130,15 @@ jobs:
             name: windows-x64-vulkan
             backend: vulkan
             cmake_extra: "-DGAME_GGML_VULKAN=ON"
+            build_jobs: 4
+            pkg_ext: ".exe"
+            lib_glob: "ggml*.dll"
+
+          - os: windows-2022
+            name: windows-x64-cuda
+            backend: cuda
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75-real\;80-real\;86-real\;89-real'
+            build_jobs: 2
             pkg_ext: ".exe"
             lib_glob: "ggml*.dll"
 
@@ -147,12 +161,21 @@ jobs:
         if: matrix.backend == 'vulkan'
         run: glslc --version
 
-      - name: Install CUDA Toolkit
-        if: matrix.backend == 'cuda'
-        uses: Jimver/cuda-toolkit@1a3c14e26833ccf292b268f9a790fb47dea7b2da
+      - name: Install CUDA Toolkit (Linux)
+        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@1a3c14e26833ccf292b268f9a790fb47dea7b2da # v0.2.28
         with:
           cuda: "12.6.3"
           method: network
+          log-file-suffix: "${{ matrix.name }}.txt"
+
+      - name: Install CUDA Toolkit (Windows)
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: "12.6.3"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
           log-file-suffix: "${{ matrix.name }}.txt"
 
       - name: Verify CUDA compiler
@@ -181,7 +204,9 @@ jobs:
                 ${{ matrix.cmake_extra }}
 
       - name: Build
-        run: cmake --build build -j --config Release
+        # ggml-cuda expands many template instances. Unbounded parallel builds can
+        # exhaust the memory of GitHub-hosted runners and terminate nvcc.
+        run: cmake --build build --parallel ${{ matrix.build_jobs }} --config Release
 
       - name: Verify binary
         run: |
