@@ -190,9 +190,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: ${{ runner.os }}-deps-${{ hashFiles('cmake/Dependencies.cmake') }}
+          # FetchContent stores generator-specific subbuild state here, so do not
+          # share it between VS 2022/2026 runners or between different backends.
+          key: ${{ matrix.name }}-deps-${{ hashFiles('cmake/Dependencies.cmake') }}
           restore-keys: |
-            ${{ runner.os }}-deps-
+            ${{ matrix.name }}-deps-
 
       - name: Configure
         run: |
