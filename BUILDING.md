@@ -179,11 +179,14 @@ build/bin/game_ggml_cli serve game_medium.gguf
 
 The hosted CI builds Linux x64 and Windows x64 CUDA packages with CUDA Toolkit
 12.6.3 and Visual Studio 2022 on Windows. It verifies Toolkit discovery, CUDA
-compilation, linking, and that the CLI starts with `--version`. On Windows, the
-verification step adds `%CUDA_PATH%\\bin` to `PATH` because `ggml-cuda.dll` loads
-CUDA runtime and cuBLAS DLLs from the Toolkit installation. GitHub-hosted runners
-do not provide an NVIDIA GPU, so actual CUDA inference must still be smoke-tested
-on an NVIDIA system.
+compilation, linking, and packaging. On Windows, `ggml-cuda.dll` imports
+`nvcuda.dll` (the NVIDIA driver library) at load time, and GitHub-hosted runners
+have no NVIDIA driver, so the CLI cannot start there even for `--version`; the
+Windows CUDA job therefore verifies the build output and its PE import-table
+dependencies instead, and performs the startup smoke test only when
+`nvcuda.dll` is present (a real GPU machine). GitHub-hosted runners do not
+provide an NVIDIA GPU, so actual CUDA inference must still be smoke-tested on an
+NVIDIA system.
 
 The release architecture is `75`, which emits both native CC 7.5 SASS and CC
 7.5 PTX. Turing GPUs (for example, GeForce RTX 20 series) use the native image;
@@ -204,7 +207,7 @@ CUDA 12.x minor-version compatibility requires at least NVIDIA driver
 in NVIDIA's CUDA Compatibility Guide. Using the current production driver is
 recommended. The packages currently expect the CUDA 12 runtime and cuBLAS
 libraries to be installed on the target system; they do not bundle NVIDIA's
-runtime libraries.
+runtime libraries or the driver (`nvcuda.dll` comes from the NVIDIA driver).
 
 ## Troubleshooting
 

@@ -236,16 +236,22 @@ jobs:
             fi
           fi
 
-          # PowerShell uses the native Windows DLL search path (no MSYS path
-          # conversion) and reports the exact module the loader cannot resolve,
-          # instead of bash's opaque exit code 127.
+          # On Windows, ggml-cuda.dll imports nvcuda.dll (the NVIDIA driver
+          # library) at load time. GitHub-hosted runners have no NVIDIA driver,
+          # so the process cannot start there even for --version. When the
+          # driver is present we run the real startup smoke test; otherwise the
+          # PE dependency checks above are the verification and we report why.
           if [ "${{ runner.os }}" = "Windows" ]; then
-            powershell -NoProfile -ExecutionPolicy Bypass -Command '
-              $env:PATH = "$env:CUDA_PATH\bin;" + $env:PATH
-              $exe = Join-Path (Get-Location) "build/bin/game_ggml_cli${{ matrix.pkg_ext }}"
-              & $exe --version
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            '
+            if [ -f "/c/Windows/System32/nvcuda.dll" ]; then
+              powershell -NoProfile -ExecutionPolicy Bypass -Command '
+                $env:PATH = "$env:CUDA_PATH\bin;" + $env:PATH
+                $exe = Join-Path (Get-Location) "build/bin/game_ggml_cli${{ matrix.pkg_ext }}"
+                & $exe --version
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              '
+            else
+              echo "no NVIDIA driver on this runner (nvcuda.dll not found); startup smoke test requires a GPU machine"
+            fi
           else
             build/bin/game_ggml_cli${{ matrix.pkg_ext }} --version
           fi
