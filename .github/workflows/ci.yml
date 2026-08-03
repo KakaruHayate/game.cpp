@@ -212,7 +212,18 @@ jobs:
 
       - name: Verify binary
         run: |
+          set -euo pipefail
           ls -la build/bin/
+
+          # The Windows CUDA installer exposes CUDA_PATH, but its runtime DLL
+          # directory is not reliably inherited by Git Bash. ggml-cuda links to
+          # cuBLAS dynamically, so make the Toolkit DLLs visible for this smoke test.
+          if [ "${{ matrix.backend }}" = "cuda" ] && [ "${{ runner.os }}" = "Windows" ]; then
+            CUDA_BIN="$(cygpath -u "$CUDA_PATH")/bin"
+            test -f "$CUDA_BIN/cublas64_12.dll"
+            export PATH="$CUDA_BIN:$PATH"
+          fi
+
           build/bin/game_ggml_cli${{ matrix.pkg_ext }} --version
 
       - name: Download medium GGUF

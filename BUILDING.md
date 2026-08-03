@@ -179,9 +179,11 @@ build/bin/game_ggml_cli serve game_medium.gguf
 
 The hosted CI builds Linux x64 and Windows x64 CUDA packages with CUDA Toolkit
 12.6.3 and Visual Studio 2022 on Windows. It verifies Toolkit discovery, CUDA
-compilation, linking, and that the CLI starts with `--version`. GitHub-hosted
-runners do not provide an NVIDIA GPU, so actual CUDA inference must still be
-smoke-tested on an NVIDIA system.
+compilation, linking, and that the CLI starts with `--version`. On Windows, the
+verification step adds `%CUDA_PATH%\\bin` to `PATH` because `ggml-cuda.dll` loads
+CUDA runtime and cuBLAS DLLs from the Toolkit installation. GitHub-hosted runners
+do not provide an NVIDIA GPU, so actual CUDA inference must still be smoke-tested
+on an NVIDIA system.
 
 The release architecture is `75`, which emits both native CC 7.5 SASS and CC
 7.5 PTX. Turing GPUs (for example, GeForce RTX 20 series) use the native image;
