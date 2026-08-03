@@ -19,6 +19,10 @@ sudo apt install libvulkan-dev vulkan-tools
 # Or install via package manager where available:
 #   sudo apt install glslc-tools   # not available on all distros
 
+# Optional: CUDA backend (NVIDIA GPUs)
+# Install a CUDA Toolkit supported by your compiler and driver. CI uses CUDA 12.6.
+# https://developer.nvidia.com/cuda-downloads
+
 # Optional: ccache for faster rebuilds
 sudo apt install ccache
 ```
@@ -91,6 +95,13 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
                -DGAME_GGML_BUILD_CLI=ON \
                -DGAME_GGML_VULKAN=ON
 
+# Linux + CUDA (requires the CUDA Toolkit and nvcc)
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+               -DGAME_GGML_BUILD_CLI=ON \
+               -DGAME_GGML_CUDA=ON \
+               -DGGML_NATIVE=OFF \
+               -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89"
+
 # macOS Apple Silicon + Metal
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
                -DGAME_GGML_BUILD_CLI=ON \
@@ -152,7 +163,22 @@ build/bin/game_ggml_cli serve game_medium.gguf
 # Then write binary request frames to stdin (see src/cli/main.cpp for protocol)
 ```
 
+## CI CUDA scope
+
+The hosted CI builds and packages the Linux x64 CUDA backend with CUDA Toolkit
+12.6. It verifies Toolkit discovery, CUDA compilation, linking, and that the CLI
+starts with `--version`. GitHub-hosted runners do not provide an NVIDIA GPU, so
+actual CUDA inference must still be smoke-tested on an NVIDIA system. The
+packaged CUDA backend uses the CUDA runtime and cuBLAS libraries supplied by the
+installed NVIDIA CUDA runtime/toolkit.
+
 ## Troubleshooting
+
+### CUDA Toolkit not found
+
+Ensure `nvcc --version` succeeds and that `CUDA_PATH` (or the platform-specific
+Toolkit environment) points to the intended installation. Delete `build/` before
+reconfiguring after changing CUDA Toolkit versions.
 
 ### glslc not found (Linux/Windows Vulkan)
 

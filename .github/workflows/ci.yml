@@ -4,6 +4,7 @@ name: ci
 #
 # Matrix:
 #   linux-x64-vulkan   — Ubuntu, Vulkan backend
+#   linux-x64-cuda     — Ubuntu 22.04, CUDA backend (CUDA 12.6)
 #   macos-arm64-metal  — Apple Silicon, Metal backend
 #   macos-x64-metal    — Intel Mac, Metal backend (cross-compiled on ARM runner)
 #   windows-x64-vulkan — Windows, Vulkan backend
@@ -94,24 +95,35 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x64-vulkan
+            backend: vulkan
             cmake_extra: "-DGAME_GGML_VULKAN=ON"
+            pkg_ext: ""
+            lib_glob: "libggml*.so*"
+
+          - os: ubuntu-22.04
+            name: linux-x64-cuda
+            backend: cuda
+            cmake_extra: "-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75;80;86;89"
             pkg_ext: ""
             lib_glob: "libggml*.so*"
 
           - os: macos-14
             name: macos-arm64-metal
+            backend: metal
             cmake_extra: "-DGAME_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
             pkg_ext: ""
             lib_glob: "libggml*.dylib"
 
           - os: macos-14
             name: macos-x64-metal
+            backend: metal
             cmake_extra: "-DGAME_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=x86_64"
             pkg_ext: ""
             lib_glob: "libggml*.dylib"
 
           - os: windows-latest
             name: windows-x64-vulkan
+            backend: vulkan
             cmake_extra: "-DGAME_GGML_VULKAN=ON"
             pkg_ext: ".exe"
             lib_glob: "ggml*.dll"
@@ -125,15 +137,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Vulkan SDK
-        if: runner.os == 'Linux' || runner.os == 'Windows'
+        if: matrix.backend == 'vulkan'
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff
         with:
           version: 1.4.309.0
           cache: true
 
       - name: Verify Vulkan shader compiler
-        if: runner.os == 'Linux' || runner.os == 'Windows'
+        if: matrix.backend == 'vulkan'
         run: glslc --version
+
+      - name: Install CUDA Toolkit
+        if: matrix.backend == 'cuda'
+        uses: Jimver/cuda-toolkit@1a3c14e26833ccf292b268f9a790fb47dea7b2da
+        with:
+          cuda: "12.6.3"
+          method: network
+          log-file-suffix: "${{ matrix.name }}.txt"
+
+      - name: Verify CUDA compiler
+        if: matrix.backend == 'cuda'
+        run: nvcc --version
 
       - name: Disable native CPU for cross-compile (macOS x86_64 only)
         if: matrix.name == 'macos-x64-metal'
