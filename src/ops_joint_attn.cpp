@@ -248,7 +248,10 @@ JoinResult pjac(
         if (kernel != 0 && w_dw) {
             ggml_tensor * m_tr = ggml_cont(ctx, ggml_permute(ctx, m, 1, 0, 2, 3));
             const int pad = (kernel - 1) / 2;
-            ggml_tensor * cv = ggml_conv_1d_dw(ctx, w_dw, m_tr, 1, pad, 1);
+            // ggml v0.11 conv_1d_dw -> im2col_f16 requires an F16 kernel.
+            ggml_tensor * w_dw_k = (w_dw->type == GGML_TYPE_F16)
+                ? w_dw : ggml_cast(ctx, w_dw, GGML_TYPE_F16);
+            ggml_tensor * cv = ggml_conv_1d_dw(ctx, w_dw_k, m_tr, 1, pad, 1);
             cv = add_conv_bias_1d(ctx, cv, b_dw);
             ggml_tensor * cv_back = ggml_cont(ctx, ggml_permute(ctx, cv, 1, 0, 2, 3));
             m = ggml_add(ctx, cv_back, m);

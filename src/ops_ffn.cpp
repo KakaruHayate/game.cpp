@@ -110,11 +110,15 @@ ggml_tensor * cgmlp(ggml_context * ctx,
     // ggml_conv_1d_dw expects input b shape (T, C, B) with ne=(T, C, B, 1)
     // and kernel a shape (K, 1, C).  Our x2_norm is (L, T, B); permute to
     // (T, L, B) and make contiguous before the call.
+    // Note: ggml v0.11 conv_1d_dw -> im2col_f16 asserts the kernel is F16,
+    // so convert the (static) depthwise weight when it is stored F32.
     ggml_tensor * x2_tr = ggml_cont(ctx, ggml_permute(ctx, x2_norm, 1, 0, 2, 3));
     const int stride = 1;
     const int pad    = (kernel_size - 1) / 2;
     const int dil    = 1;
-    ggml_tensor * conv = ggml_conv_1d_dw(ctx, w_dw, x2_tr, stride, pad, dil);  // (T, L, B)
+    ggml_tensor * w_dw_k = (w_dw->type == GGML_TYPE_F16)
+        ? w_dw : ggml_cast(ctx, w_dw, GGML_TYPE_F16);
+    ggml_tensor * conv = ggml_conv_1d_dw(ctx, w_dw_k, x2_tr, stride, pad, dil);  // (T, L, B)
     conv = add_conv_bias(ctx, conv, b_dw);
     if (use_dw_act) conv = ggml_gelu(ctx, conv);
 

@@ -19,7 +19,9 @@
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
+#include <thread>
 
 // -----------------------------------------------------------------------------
 // Public version helpers (declared in version.h)
@@ -109,8 +111,22 @@ ggml_backend_t init_backend(Backend which) {
 #else
             return nullptr;
 #endif
-        case Backend::CPU:
-            return ggml_backend_cpu_init();
+        case Backend::CPU: {
+            ggml_backend_t b = ggml_backend_cpu_init();
+            if (b) {
+                // Default: use all hardware threads so CPU inference is not
+                // accidentally single-threaded.  Override with
+                // GAME_GGML_THREADS=<n>.
+                unsigned n = std::thread::hardware_concurrency();
+                if (n == 0) n = 1;
+                if (const char * env = std::getenv("GAME_GGML_THREADS"); env && *env) {
+                    const int v = std::atoi(env);
+                    if (v > 0) n = static_cast<unsigned>(v);
+                }
+                ggml_backend_cpu_set_n_threads(b, static_cast<int>(n));
+            }
+            return b;
+        }
     }
     return nullptr;
 }

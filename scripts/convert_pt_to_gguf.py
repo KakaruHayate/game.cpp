@@ -25,6 +25,7 @@ not depend on the rest of the GAME training environment.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import logging
 import pathlib
@@ -390,10 +391,129 @@ def _add_metadata(writer: gguf.GGUFWriter, cfg: dict, lang_map: dict[str, int] |
 
 
 # =============================================================================
+# Quantization
+# =============================================================================
+
+# GGML quantized storage requires ne0 % 32 == 0 (block size).  The depthwise
+# conv kernels (k=31 / 5 / 7) violate this, so they can only be stored as
+# F16/F32.  ggml v0.11's conv_1d_dw additionally requires an F16 kernel, so
+# we force F16 for every depthwise conv weight.
+_QUANT_BLOCK = 32
+_DW_WEIGHT_PATTERNS = (
+    "*.attn.c.dw.weight",
+    "*.attn.c_x.dw.weight",
+    "*.attn.c_pool.dw.weight",
+    "*.attn.merge_dw_conv.weight",
+    "*.attn.merge_dw_conv_x.weight",
+    "*.attn.merge_dw_conv_pool.weight",
+)
+
+# Consumed by ggml_repeat (learnable pool tokens copied to N regions): the
+# repeat output inherits the source type, and the downstream rms_norm on the
+# pool stream only supports F32 — so this must stay F32.
+_F32_FORCED_PATTERNS = (
+    "estimator.pool_token_gen.emb",
+)
+
+_QUANT_TYPES = {
+    "F32": gguf.GGMLQuantizationType.F32,
+    "F16": gguf.GGMLQuantizationType.F16,
+    "Q8_0": gguf.GGMLQuantizationType.Q8_0,
+    "Q4_0": gguf.GGMLQuantizationType.Q4_0,
+    "Q4_K": gguf.GGMLQuantizationType.Q4_K,
+    "Q5_K": gguf.GGMLQuantizationType.Q5_K,
+    "Q6_K": gguf.GGMLQuantizationType.Q6_K,
+}
+
+
+@dataclass
+class QuantRule:
+    """A pattern -> type rule.  Later rules override earlier matches."""
+
+    pattern: str
+    qtype: gguf.GGMLQuantizationType
+
+
+def parse_quant_config(path: pathlib.Path) -> list[QuantRule]:
+    """Parse a JSON quant config file: {"<glob>": "<TYPE>", ...}."""
+    if path is None:
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("quant config must be a JSON object of {pattern: type}")
+    rules: list[QuantRule] = []
+    for pat, tname in raw.items():
+        if tname not in _QUANT_TYPES:
+            raise ValueError(
+                f"unknown quant type '{tname}' for pattern '{pat}'; "
+                f"valid: {sorted(_QUANT_TYPES)}"
+            )
+        rules.append(QuantRule(pat, _QUANT_TYPES[tname]))
+    return rules
+
+
+def _role_f32_only(name: str) -> bool:
+    """Tensors consumed by elementwise ggml ops against F32 activations.
+
+    rms_norm weights (ggml_mul), layer-scales (ggml_mul) and biases
+    (ggml_add) all require the same type as the F32 activation tensor, so
+    they must be stored F32 regardless of any quant rule.
+    """
+    return name.endswith(".bias") or name.endswith(".scale") or "norm" in name
+
+
+def resolve_tensor_type(name: str, arr: np.ndarray, rules: list[QuantRule]) -> gguf.GGMLQuantizationType:
+    """Pick the GGUF storage type for one tensor given the rule list.
+
+    Hard constraints (GGML compatibility) always win:
+      1. depthwise conv weights -> F16 (im2col_f16 requires it; k % 32 != 0)
+      2. norms / lay-scales / biases -> F32 (elementwise ops, see _role_f32_only)
+      3. any tensor whose ne0 % 32 != 0 -> F16  (quant storage impossible)
+      4. otherwise the last matching rule decides (default F32).
+    """
+    if any(fnmatch.fnmatch(name, p) for p in _DW_WEIGHT_PATTERNS):
+        return gguf.GGMLQuantizationType.F16
+    if any(fnmatch.fnmatch(name, p) for p in _F32_FORCED_PATTERNS):
+        return gguf.GGMLQuantizationType.F32
+    if _role_f32_only(name):
+        return gguf.GGMLQuantizationType.F32
+
+    qtype = gguf.GGMLQuantizationType.F32
+    for r in rules:
+        if fnmatch.fnmatch(name, r.pattern):
+            qtype = r.qtype
+
+    if qtype not in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
+        # quantized block types need ne0 % 32 == 0
+        if arr.shape[-1] % _QUANT_BLOCK != 0:
+            log.warning("  %s: ne0=%d %% %d != 0, falling back to F16",
+                        name, arr.shape[-1], _QUANT_BLOCK)
+            return gguf.GGMLQuantizationType.F16
+    return qtype
+
+
+def maybe_quantize(arr: np.ndarray, qtype: gguf.GGMLQuantizationType) -> tuple[np.ndarray, gguf.GGMLQuantizationType]:
+    """Quantize `arr` (torch layout, C-contiguous) for GGUF storage.
+
+    Returns (payload_bytes_array, effective_qtype).  F32/F16 pass through as
+    float32/float16 arrays; block quant types use gguf.quantize which assumes
+    the data is laid out with the block axis last — identical to torch layout
+    for (out, in) weights and (c, 1, k) convs, which is what GGML expects
+    (ne0 = fastest dim).
+    """
+    if qtype == gguf.GGMLQuantizationType.F32:
+        return arr.astype(np.float32, copy=False), qtype
+    if qtype == gguf.GGMLQuantizationType.F16:
+        return arr.astype(np.float16, copy=False), qtype
+    return gguf.quantize(arr, qtype), qtype
+
+
+# =============================================================================
 # Main convert routine
 # =============================================================================
 
-def convert(model_dir: pathlib.Path, output_path: pathlib.Path, *, strict: bool) -> ConversionReport:
+def convert(model_dir: pathlib.Path, output_path: pathlib.Path, *, strict: bool,
+            quant_rules: list[QuantRule] | None = None) -> ConversionReport:
     model_pt     = model_dir / "model.pt"
     config_yaml  = model_dir / "config.yaml"
     lang_map_js  = model_dir / "lang_map.json"
@@ -440,10 +560,23 @@ def convert(model_dir: pathlib.Path, output_path: pathlib.Path, *, strict: bool)
     metadata_keys = _add_metadata(writer, cfg, lang_map)
 
     total_params = 0
+    quant_report: dict[str, str] = {}
     for name in sorted(sd):
         arr = _tensor_to_np(sd[name])
-        writer.add_tensor(name, arr, raw_dtype=gguf.GGMLQuantizationType.F32)
+        qtype = resolve_tensor_type(name, arr, quant_rules or [])
+        payload, eff = maybe_quantize(arr, qtype)
+        # For block-quantized payloads the writer expects the *byte* shape and
+        # derives the logical shape itself; F32/F16 pass-through uses the data
+        # shape directly, so payload.shape is correct in both cases.
+        writer.add_tensor(name, payload, raw_shape=payload.shape, raw_dtype=eff)
         total_params += int(arr.size)
+        quant_report[name] = eff.name
+    if quant_rules:
+        n_q = sum(1 for v in quant_report.values() if v not in ("F32", "F16"))
+        log.info("quantization: %d/%d tensors stored as block-quantized types",
+                 n_q, len(quant_report))
+        for t in sorted({v for v in quant_report.values()}):
+            log.info("  %-6s %4d tensors", t, sum(1 for v in quant_report.values() if v == t))
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
@@ -468,6 +601,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Directory containing model.pt + config.yaml + (lang_map.json)")
     parser.add_argument("-o", "--output", type=pathlib.Path, required=True,
                         help="Path to the output GGUF file")
+    parser.add_argument("--quant-config", type=pathlib.Path, default=None,
+                        help="JSON file: {<tensor glob>: <TYPE>} with TYPE in "
+                             "F32/F16/Q8_0/Q4_0/Q4_K/Q5_K/Q6_K. Hard GGML "
+                             "constraints override: depthwise convs -> F16, "
+                             "norms/scales/biases -> F32, ne0%%32!=0 -> F16.")
     parser.add_argument("--strict", action="store_true",
                         help="Fail if any expected tensor is missing (default: warn)")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -480,7 +618,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        report = convert(args.model_dir, args.output, strict=args.strict)
+        quant_rules = parse_quant_config(args.quant_config)
+        report = convert(args.model_dir, args.output, strict=args.strict,
+                         quant_rules=quant_rules)
     except Exception as e:
         log.error("conversion failed: %s", e)
         return 1
