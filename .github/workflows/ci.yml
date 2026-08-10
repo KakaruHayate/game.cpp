@@ -14,7 +14,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master, 'feature/**']
+    branches: [main, master]
     tags: ['v*']
   pull_request: {}
   workflow_dispatch: {}
@@ -55,9 +55,17 @@ jobs:
       - name: Convert checkpoint and prepare backend config
         run: |
           mkdir -p model
+          # FP32 baseline (backward-compatible default for OpenUtau).
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
             -o model/game_medium.gguf
+          # Quantized Q8_0 GGUF (recommended for CPU/Vulkan: ~3.4x smaller,
+          # note-level near-lossless).  Hard constraints enforced by the
+          # converter: depthwise convs -> F16, norms/scales/biases -> F32.
+          python scripts/convert_pt_to_gguf.py \
+            --model-dir GAME-1.0-medium \
+            -o model/game_medium_q8.gguf \
+            --quant-config scripts/quant_all_q8.json
           cat > model/config.json <<'EOF'
           {
             "samplerate": 44100,
@@ -75,6 +83,9 @@ jobs:
       - name: Verify model files
         run: |
           test -s model/game_medium.gguf
+          test -s model/game_medium_q8.gguf
+          # sanity: the quantized GGUF must be (much) smaller than FP32
+          test "$(stat -c%s model/game_medium_q8.gguf)" -lt "$(( $(stat -c%s model/game_medium.gguf) / 2 ))"
           python -m json.tool model/config.json >/dev/null
           ls -lh model/
 
@@ -284,7 +295,7 @@ jobs:
           fi
 
           # Model and OpenUtau backend config.
-          cp model/game_medium.gguf model/config.json "$PKG/"
+          cp model/game_medium.gguf model/game_medium_q8.gguf model/config.json "$PKG/"
 
           # oudep manifest
           cat > "$PKG/oudep.yaml" <<EOF
@@ -299,6 +310,7 @@ jobs:
           # OpenUtau expects all of these files at the package root.
           test -x "$PKG/$BIN"
           test -s "$PKG/game_medium.gguf"
+          test -s "$PKG/game_medium_q8.gguf"
           test -s "$PKG/config.json"
           test -s "$PKG/oudep.yaml"
           grep -Fx "id: game-ggml-medium" "$PKG/oudep.yaml"
@@ -334,6 +346,7 @@ jobs:
             name=$(basename "$dir")
             test -s "$dir/oudep.yaml"
             test -s "$dir/game_medium.gguf"
+            test -s "$dir/game_medium_q8.gguf"
             test -s "$dir/config.json"
             (
               cd "$dir"
@@ -345,6 +358,7 @@ jobs:
           for package in *.oudep; do
             test "$(unzip -Z1 "$package" | grep -c '^oudep.yaml$')" -eq 1
             test "$(unzip -Z1 "$package" | grep -c '^game_medium.gguf$')" -eq 1
+            test "$(unzip -Z1 "$package" | grep -c '^game_medium_q8.gguf$')" -eq 1
             test "$(unzip -Z1 "$package" | grep -c '^config.json$')" -eq 1
           done
           ls -lh *.oudep
