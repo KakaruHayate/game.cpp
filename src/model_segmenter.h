@@ -54,6 +54,45 @@ struct SegmenterOutputs {
     ggml_tensor * latent;   // (latent_out_dim, T, 1) — nullable if return_latent=false
 };
 
+// Tail-stack outputs (DBCache).
+struct SegmenterTailOutputs {
+    ggml_tensor * x_run;    // (D, T, 1) — full block-stack output
+    ggml_tensor * latent;   // nullable
+};
+
+// DBCache-friendly graph split: the segmenter block stack is split at
+// `fn_blocks` into a front part (always executed) and a tail part (skipped on
+// cache hits).  These three builders mirror the PyTorch DBCacheSegmenter
+// (input_head / run_front / run_tail / output_head).
+//
+// front: embeddings + input_proj + blocks[0..fn-1] -> x_front (D, T, 1)
+ggml_tensor * build_segmenter_front_graph(
+    ggml_context * ctx,
+    ggml_tensor * x_seg,
+    ggml_tensor * noise_mod3,
+    ggml_tensor * t_scalar,
+    ggml_tensor * lang_scalar,
+    ggml_tensor * positions,
+    const SegmenterWeights & W,
+    const GameModelConfig & cfg,
+    int fn_blocks);
+
+// tail: blocks[fn_blocks..N-1] (+ latent tap) -> (x_run, latent)
+SegmenterTailOutputs build_segmenter_tail_graph(
+    ggml_context * ctx,
+    ggml_tensor * x_front,
+    ggml_tensor * positions,
+    const SegmenterWeights & W,
+    const GameModelConfig & cfg,
+    int fn_blocks);
+
+// head: output_norm + output_proj -> logits (T,)
+ggml_tensor * build_segmenter_head_graph(
+    ggml_context * ctx,
+    ggml_tensor * x_out,
+    const SegmenterWeights & W,
+    const GameModelConfig & cfg);
+
 // Build the segmenter graph.
 //   x_seg        : (D, T, 1)          — the `x_seg` split of the encoder output
 //   noise_mod3   : int32 (T,)         — `noise_regions % region_cycle_len`

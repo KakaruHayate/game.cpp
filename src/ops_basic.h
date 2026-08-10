@@ -45,4 +45,22 @@ ggml_tensor * embedding(ggml_context * ctx,
                         ggml_tensor * weight,
                         ggml_tensor * indices);
 
+// Depthwise 1D convolution (same padding), the CgMLP / merge "dw" conv.
+//   - `w_dw`: ne=(K, 1, C)  — PyTorch Conv1d groups weight (C, 1, K).
+//   - `x`:    ne=(T, C, B), contiguous.
+//   - returns ne=(T, C, B).
+// Two implementations:
+//   * direct: GGML_OP_CONV_2D_DW (dedicated per-channel CPU kernel, no im2col)
+//             — only available on the CPU backend.
+//   * legacy: ggml_conv_1d_dw (im2col + mul_mat), used on Vulkan/Metal where
+//             GGML_OP_CONV_2D_DW is not implemented; requires an F16 kernel.
+// The selected mode is a process-wide flag set at model load time.
+void set_direct_dwconv(bool enable);
+bool direct_dwconv();
+ggml_tensor * dwconv_1d(ggml_context * ctx,
+                        ggml_tensor * w_dw,
+                        ggml_tensor * x,
+                        int kernel_size,
+                        int pad);
+
 }  // namespace game_ggml::internal::ops

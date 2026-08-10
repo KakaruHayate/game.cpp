@@ -98,8 +98,11 @@ void print_usage(const char * argv0) {
         "  --t0 <float>                           D3PM initial t                           (default: 0.0)\n"
         "  --nsteps <int>                         D3PM sampling steps                      (default: 1)\n"
         "  --seed <uint64>                        RNG seed (0 = random_device)             (default: 0)\n"
+        "  --no-slice                             Feed the full WAV as one chunk           (default: false)\n"
         "  --pitch-format name|number             Text output pitch format                 (default: name)\n"
         "  --round-pitch                          Round pitch to integer in text output    (default: false)\n"
+        "  --cache-threshold <float>              DBCache normalized-L1 threshold           (default: 0 = off)\n"
+        "  --cache-fn-blocks <int>                DBCache front (warmup) blocks             (default: 1)\n"
         "  --rng-replay <path>                    Feed float32 uniform samples from file    (parity vs PyTorch)\n",
         argv0);
 }
@@ -375,9 +378,12 @@ int cmd_extract(int argc, char ** argv) {
     float t0          = 0.0f;
     int   nsteps      = 1;
     std::uint64_t seed = 0;
+    bool no_slice = false;
     std::string pitch_format = "name";
     bool round_pitch = false;
     std::string rng_replay_path;
+    float db_cache_threshold = 0.0f;
+    int   db_cache_fn_blocks = 1;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -396,9 +402,12 @@ int cmd_extract(int argc, char ** argv) {
         else if (a == "--t0")                          t0 = std::stof(next(a));
         else if (a == "--nsteps")                      nsteps = std::atoi(next(a).c_str());
         else if (a == "--seed")                        seed = std::strtoull(next(a).c_str(), nullptr, 10);
+        else if (a == "--no-slice")                    no_slice = true;
         else if (a == "--pitch-format")                pitch_format = next(a);
         else if (a == "--round-pitch")                 round_pitch = true;
         else if (a == "--rng-replay")                  rng_replay_path = next(a);
+        else if (a == "--cache-threshold")             db_cache_threshold = std::stof(next(a));
+        else if (a == "--cache-fn-blocks")             db_cache_fn_blocks = std::atoi(next(a).c_str());
         else {
             std::fprintf(stderr, "unknown option: %s\n", a.c_str());
             return 1;
@@ -417,8 +426,14 @@ int cmd_extract(int argc, char ** argv) {
     // Slice + inference per chunk.
     SlicerConfig slc_cfg;
     slc_cfg.sample_rate = model.config().inference.audio_sample_rate;
-    auto chunks = slice_waveform(wav.samples.data(), wav.samples.size(), slc_cfg);
-    std::fprintf(stderr, "sliced into %zu chunk(s)\n", chunks.size());
+    std::vector<SliceChunk> chunks;
+    if (no_slice) {
+        chunks.push_back({0.0, wav.samples});
+        std::fprintf(stderr, "slicing disabled; using 1 chunk\n");
+    } else {
+        chunks = slice_waveform(wav.samples.data(), wav.samples.size(), slc_cfg);
+        std::fprintf(stderr, "sliced into %zu chunk(s)\n", chunks.size());
+    }
 
     InferParams p;
     p.language            = language;
@@ -428,6 +443,8 @@ int cmd_extract(int argc, char ** argv) {
     p.d3pm_t0             = t0;
     p.d3pm_nsteps         = nsteps;
     p.seed                = seed;
+    p.db_cache_threshold  = db_cache_threshold;
+    p.db_cache_fn_blocks  = db_cache_fn_blocks;
 
     std::vector<Note> all_notes;
 

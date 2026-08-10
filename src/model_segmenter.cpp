@@ -112,6 +112,84 @@ SegmenterWeights bind_segmenter_weights(
 // Build graph
 // ---------------------------------------------------------------------------
 
+// Embeddings + input_proj + front blocks[0..fn-1] -> x_front (D, T, 1).
+ggml_tensor * build_segmenter_front_graph(
+    ggml_context * ctx,
+    ggml_tensor * x_seg,
+    ggml_tensor * noise_mod3,
+    ggml_tensor * t_scalar,
+    ggml_tensor * lang_scalar,
+    ggml_tensor * positions,
+    const SegmenterWeights & W,
+    const GameModelConfig & cfg,
+    int fn_blocks)
+{
+    // ----- embedding injections (all [D, T, 1] additions) -----
+    ggml_tensor * noise_emb = ops::embedding(ctx, W.w_noise_embedding, noise_mod3);
+    ggml_tensor * x = ggml_add(ctx, x_seg, noise_emb);
+
+    if (W.w_time_0 && t_scalar) {
+        ggml_tensor * h = ops::linear(ctx, t_scalar, W.w_time_0, W.b_time_0);
+        h = ggml_gelu(ctx, h);
+        h = ops::linear(ctx, h, W.w_time_2, W.b_time_2);
+        x = ggml_add(ctx, x, h);
+    }
+
+    if (W.w_lang_embedding && lang_scalar) {
+        ggml_tensor * le = ops::embedding(ctx, W.w_lang_embedding, lang_scalar);
+        x = ggml_add(ctx, x, le);
+    }
+
+    x = ops::linear(ctx, x, W.w_input_proj, W.b_input_proj);
+    for (int i = 0; i < fn_blocks; ++i) {
+        x = ops::ebf_block(ctx, x, W.layers[i], positions,
+                           cfg.segmenter.num_heads, cfg.segmenter.head_dim);
+    }
+    return x;  // x_front
+}
+
+// Tail blocks[fn_blocks..N-1] (+ latent tap) -> (x_run, latent).
+SegmenterTailOutputs build_segmenter_tail_graph(
+    ggml_context * ctx,
+    ggml_tensor * x_front,
+    ggml_tensor * positions,
+    const SegmenterWeights & W,
+    const GameModelConfig & cfg,
+    int fn_blocks)
+{
+    ggml_tensor * x = x_front;
+    ggml_tensor * latent_tap = nullptr;
+    for (int i = fn_blocks; i < cfg.segmenter.num_layers; ++i) {
+        x = ops::ebf_block(ctx, x, W.layers[i], positions,
+                           cfg.segmenter.num_heads, cfg.segmenter.head_dim);
+        if (cfg.segmenter.return_latent && i == cfg.segmenter.latent_layer_idx - 1) {
+            latent_tap = x;
+        }
+    }
+
+    SegmenterTailOutputs out{};
+    out.x_run = x;
+    if (cfg.segmenter.return_latent && latent_tap) {
+        ggml_tensor * lt = latent_tap;
+        if (W.w_latent_norm) lt = ops::rms_norm(ctx, lt, W.w_latent_norm);
+        out.latent = ggml_cont(ctx, ops::linear(ctx, lt, W.w_latent_proj, W.b_latent_proj));
+    }
+    return out;
+}
+
+// output_norm + output_proj -> logits (T,).
+ggml_tensor * build_segmenter_head_graph(
+    ggml_context * ctx,
+    ggml_tensor * x_out,
+    const SegmenterWeights & W,
+    const GameModelConfig & cfg)
+{
+    if (W.w_output_norm) x_out = ops::rms_norm(ctx, x_out, W.w_output_norm);
+    ggml_tensor * logits = ops::linear(ctx, x_out, W.w_output_proj, W.b_output_proj);
+    logits = ggml_cont(ctx, logits);
+    return ggml_reshape_1d(ctx, logits, logits->ne[1]);
+}
+
 SegmenterOutputs build_segmenter_graph(
     ggml_context * ctx,
     ggml_tensor * x_seg,
@@ -122,51 +200,15 @@ SegmenterOutputs build_segmenter_graph(
     const SegmenterWeights & W,
     const GameModelConfig & cfg)
 {
-    // ----- embedding injections (all [D, T, 1] additions) -----
-    // Noise: embedding(noise_mod3) → (D, T). View as (D, T, 1) to match x_seg.
-    ggml_tensor * noise_emb = ops::embedding(ctx, W.w_noise_embedding, noise_mod3);
-    // Result ne = (D, T).  Broadcast-compatible with (D, T, 1) when added.
-    ggml_tensor * x = ggml_add(ctx, x_seg, noise_emb);
-
-    if (W.w_time_0 && t_scalar) {
-        // time_embedding: Linear(1, 4D) → GELU → Linear(4D, D).  t_scalar shape
-        // is (1, 1, 1) so linear treats the innermost dim as the feature dim.
-        ggml_tensor * h = ops::linear(ctx, t_scalar, W.w_time_0, W.b_time_0);
-        h = ggml_gelu(ctx, h);
-        h = ops::linear(ctx, h, W.w_time_2, W.b_time_2);
-        // Broadcasts (D, 1, 1) across (D, T, 1).
-        x = ggml_add(ctx, x, h);
-    }
-
-    if (W.w_lang_embedding && lang_scalar) {
-        ggml_tensor * le = ops::embedding(ctx, W.w_lang_embedding, lang_scalar);
-        // (D, 1) after single-token lookup.  Broadcasts on add.
-        x = ggml_add(ctx, x, le);
-    }
-
-    // ----- EBFBackbone (8 layers, return_latent) -----
-    x = ops::linear(ctx, x, W.w_input_proj, W.b_input_proj);
-    ggml_tensor * latent_tap = nullptr;
-    for (int i = 0; i < cfg.segmenter.num_layers; ++i) {
-        x = ops::ebf_block(ctx, x, W.layers[i], positions,
-                           cfg.segmenter.num_heads, cfg.segmenter.head_dim);
-        if (cfg.segmenter.return_latent && i == cfg.segmenter.latent_layer_idx - 1) {
-            latent_tap = x;
-        }
-    }
+    ggml_tensor * x_front = build_segmenter_front_graph(
+        ctx, x_seg, noise_mod3, t_scalar, lang_scalar, positions, W, cfg,
+        /*fn_blocks=*/0);
 
     SegmenterOutputs out{};
-    if (cfg.segmenter.return_latent && latent_tap) {
-        ggml_tensor * lt = latent_tap;
-        if (W.w_latent_norm) lt = ops::rms_norm(ctx, lt, W.w_latent_norm);
-        out.latent = ggml_cont(ctx, ops::linear(ctx, lt, W.w_latent_proj, W.b_latent_proj));
-    }
-
-    if (W.w_output_norm) x = ops::rms_norm(ctx, x, W.w_output_norm);
-    ggml_tensor * logits = ops::linear(ctx, x, W.w_output_proj, W.b_output_proj);
-    // logits has ne=(1, T, 1) — make contiguous and reshape to (T,).
-    logits = ggml_cont(ctx, logits);
-    out.logits = ggml_reshape_1d(ctx, logits, logits->ne[1]);
+    SegmenterTailOutputs tail = build_segmenter_tail_graph(
+        ctx, x_front, positions, W, cfg, /*fn_blocks=*/0);
+    out.latent = tail.latent;
+    out.logits = build_segmenter_head_graph(ctx, tail.x_run, W, cfg);
     return out;
 }
 

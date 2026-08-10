@@ -17,7 +17,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <map>
+#include <numeric>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace game_ggml {
@@ -61,6 +65,14 @@ std::unique_ptr<Model::Impl> Model::Impl::load(const std::string & path) {
     impl->gguf    = std::make_unique<internal::GgufFile>(internal::GgufFile::open(path));
     impl->cfg     = internal::load_config(*impl->gguf);
     impl->backend = internal::init_best_backend();
+
+    // Depthwise convs: CPU uses the dedicated per-channel GGML_OP_CONV_2D_DW
+    // kernel (no im2col); Vulkan/Metal fall back to ggml_conv_1d_dw.
+    const char * bname = internal::backend_name(impl->backend);
+    const bool is_vk_or_metal = (std::strcmp(bname, "vulkan") == 0) ||
+                                (std::strcmp(bname, "metal") == 0);
+    internal::ops::set_direct_dwconv(!is_vk_or_metal);
+
     impl->weights = std::make_unique<internal::LoadedWeights>(
         internal::LoadedWeights::load_all(*impl->gguf, impl->backend));
 
@@ -109,9 +121,35 @@ struct StageCtx {
         graph = ggml_new_graph_custom(ctx, graph_nodes, /*grads=*/false);
     }
 
+    void dump_backend_support(const char * stage) {
+        const char * env = std::getenv("GAME_GGML_DUMP_OPS");
+        if (!env || !*env || env[0] == '0') return;
+
+        std::map<std::string, int> unsupported;
+        const int n_nodes = ggml_graph_n_nodes(graph);
+        for (int i = 0; i < n_nodes; ++i) {
+            const ggml_tensor * node = ggml_graph_node(graph, i);
+            if (!ggml_backend_supports_op(backend, node)) {
+                unsupported[ggml_op_name(node->op)] += 1;
+            }
+        }
+
+        std::fprintf(stderr,
+            "[GAME_GGML_OPS] stage=%s backend=%s nodes=%d unsupported=%d\n",
+            stage, game_ggml::internal::backend_name(backend),
+            n_nodes,
+            std::accumulate(unsupported.begin(), unsupported.end(), 0,
+                [](int acc, const auto & kv) { return acc + kv.second; }));
+        for (const auto & kv : unsupported) {
+            std::fprintf(stderr, "[GAME_GGML_OPS]   unsupported %-24s %d\n",
+                kv.first.c_str(), kv.second);
+        }
+    }
+
     void finalize(ggml_tensor * out) {
         ggml_set_output(out);
         ggml_build_forward_expand(graph, out);
+        dump_backend_support("stage");
         alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
         if (!ggml_gallocr_alloc_graph(alloc, graph)) {
             throw Error("ggml_gallocr_alloc_graph failed");
@@ -143,7 +181,7 @@ void Model::Impl::run_encoder(const float * mel, int T,
     const int D_mel = cfg.in_dim;
     const int D_emb = cfg.embedding_dim;
 
-    StageCtx s(backend, 384 * 1024 * 1024, 16384);
+    StageCtx s(backend, 256 * 1024 * 1024, 8192);
 
     ggml_tensor * mel_in = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D_mel, T, 1);
     ggml_set_input(mel_in);
@@ -158,6 +196,7 @@ void Model::Impl::run_encoder(const float * mel, int T,
     ggml_set_output(outs.x_est);
     ggml_build_forward_expand(s.graph, outs.x_seg);
     ggml_build_forward_expand(s.graph, outs.x_est);
+    s.dump_backend_support("encoder");
     s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (encoder)");
 
@@ -175,8 +214,23 @@ void Model::Impl::run_encoder(const float * mel, int T,
 }
 
 // ============================================================================
-// Stage 2 — segmenter (one D3PM step)
+// Stage 2 — segmenter (one D3PM step, DBCache-aware)
 // ============================================================================
+
+namespace {
+
+// Normalized L1 residual between the current and previous front output
+// (mirrors PyTorch DBCacheSegmenter: mean|x-x_prev| / (mean|x_prev| + eps)).
+inline float front_delta(const float * cur, const float * prev, int n) {
+    float num = 0.0f, den = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        num += std::fabs(cur[i] - prev[i]);
+        den += std::fabs(prev[i]);
+    }
+    return num / (den + 1e-8f);
+}
+
+}  // namespace
 
 void Model::Impl::run_segmenter_step(
     const float * x_seg_host, int T,
@@ -184,37 +238,119 @@ void Model::Impl::run_segmenter_step(
     std::vector<float> & logits_out)
 {
     const int D = cfg.embedding_dim;
+    SegmenterCacheState & cache = seg_cache;
+    const int nf = std::min(std::max(cache.fn_blocks, 0), cfg.segmenter.num_layers);
 
-    StageCtx s(backend, 768 * 1024 * 1024, 32768);
+    // ---------- Stage A: front blocks (always executed) ----------
+    std::vector<float> x_front(D * T);
+    {
+        StageCtx s(backend, 256 * 1024 * 1024, 8192);
 
-    ggml_tensor * xseg        = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
-    ggml_tensor * noise       = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
-    ggml_tensor * t_tensor    = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, 1, 1, 1);
-    ggml_tensor * lang_tensor = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, 1);
-    ggml_tensor * positions   = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
-    for (auto * t : {xseg, noise, t_tensor, lang_tensor, positions}) ggml_set_input(t);
+        ggml_tensor * xseg        = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
+        ggml_tensor * noise       = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+        ggml_tensor * t_tensor    = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, 1, 1, 1);
+        ggml_tensor * lang_tensor = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, 1);
+        ggml_tensor * positions   = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+        for (auto * t : {xseg, noise, t_tensor, lang_tensor, positions}) ggml_set_input(t);
 
-    auto outs = internal::build_segmenter_graph(
-        s.ctx, xseg, noise, t_tensor, lang_tensor, positions, segmenter_w, cfg);
+        ggml_tensor * out_front = internal::build_segmenter_front_graph(
+            s.ctx, xseg, noise, t_tensor, lang_tensor, positions, segmenter_w, cfg, nf);
 
-    ggml_set_output(outs.logits);
-    ggml_build_forward_expand(s.graph, outs.logits);
-    s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter)");
+        ggml_set_output(out_front);
+        ggml_build_forward_expand(s.graph, out_front);
+        s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/front)");
 
-    ggml_backend_tensor_set(xseg,        x_seg_host, 0, ggml_nbytes(xseg));
-    ggml_backend_tensor_set(noise,       noise_mod3, 0, T * sizeof(std::int32_t));
-    ggml_backend_tensor_set(t_tensor,    &t_scalar,  0, sizeof(float));
-    const std::int32_t l = static_cast<std::int32_t>(language);
-    ggml_backend_tensor_set(lang_tensor, &l, 0, sizeof(std::int32_t));
-    std::vector<std::int32_t> pos(T);
-    for (int i = 0; i < T; ++i) pos[i] = i;
-    ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
+        ggml_backend_tensor_set(xseg,        x_seg_host, 0, ggml_nbytes(xseg));
+        ggml_backend_tensor_set(noise,       noise_mod3, 0, T * sizeof(std::int32_t));
+        ggml_backend_tensor_set(t_tensor,    &t_scalar,  0, sizeof(float));
+        const std::int32_t l = static_cast<std::int32_t>(language);
+        ggml_backend_tensor_set(lang_tensor, &l, 0, sizeof(std::int32_t));
+        std::vector<std::int32_t> pos(T);
+        for (int i = 0; i < T; ++i) pos[i] = i;
+        ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
 
-    s.compute();
+        s.compute();
+        ggml_backend_tensor_get(out_front, x_front.data(), 0, x_front.size() * sizeof(float));
+    }
 
-    logits_out.resize(T);
-    ggml_backend_tensor_get(outs.logits, logits_out.data(), 0, logits_out.size() * sizeof(float));
+    // ---------- Decide cache hit ----------
+    bool use_cache = false;
+    if (cache.enabled && cache.valid &&
+        cache.step >= cache.warmup &&
+        cache.prev_front.size() == x_front.size()) {
+        if (front_delta(x_front.data(), cache.prev_front.data(), D * T) < cache.threshold) {
+            use_cache = true;
+        }
+    }
+
+    // ---------- Stage B: tail blocks (skipped on hit) ----------
+    std::vector<float> x_out(D * T);
+    if (use_cache) {
+        for (int i = 0; i < D * T; ++i) x_out[i] = x_front[i] + cache.tail_delta[i];
+        ++cache.hits;
+    } else {
+        std::vector<float> x_run(D * T);
+        {
+            StageCtx s(backend, 512 * 1024 * 1024, 16384);
+
+            ggml_tensor * x_in       = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
+            ggml_tensor * positions  = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+            for (auto * t : {x_in, positions}) ggml_set_input(t);
+
+            auto outs = internal::build_segmenter_tail_graph(
+                s.ctx, x_in, positions, segmenter_w, cfg, nf);
+
+            ggml_set_output(outs.x_run);
+            if (outs.latent) ggml_set_output(outs.latent);
+            ggml_build_forward_expand(s.graph, outs.x_run);
+            if (outs.latent) ggml_build_forward_expand(s.graph, outs.latent);
+            s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+            if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/tail)");
+
+            ggml_backend_tensor_set(x_in, x_front.data(), 0, x_front.size() * sizeof(float));
+            std::vector<std::int32_t> pos(T);
+            for (int i = 0; i < T; ++i) pos[i] = i;
+            ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
+
+            s.compute();
+            ggml_backend_tensor_get(outs.x_run, x_run.data(), 0, x_run.size() * sizeof(float));
+        }
+
+        for (int i = 0; i < D * T; ++i) x_out[i] = x_run[i];
+        cache.tail_delta.resize(D * T);
+        for (int i = 0; i < D * T; ++i) cache.tail_delta[i] = x_run[i] - x_front[i];
+        cache.prev_front = x_front;
+        cache.valid = true;
+        ++cache.misses;
+    }
+
+    // ---------- Stage C: head (output norm + proj) ----------
+    {
+        StageCtx s(backend, 16 * 1024 * 1024, 256);
+
+        ggml_tensor * x_in = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
+        ggml_set_input(x_in);
+
+        ggml_tensor * logits = internal::build_segmenter_head_graph(s.ctx, x_in, segmenter_w, cfg);
+
+        ggml_set_output(logits);
+        ggml_build_forward_expand(s.graph, logits);
+        s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/head)");
+
+        ggml_backend_tensor_set(x_in, x_out.data(), 0, x_out.size() * sizeof(float));
+        s.compute();
+
+        logits_out.resize(T);
+        ggml_backend_tensor_get(logits, logits_out.data(), 0, logits_out.size() * sizeof(float));
+    }
+
+    ++cache.step;
+    if (cache.enabled && std::getenv("GAME_GGML_DUMP_DBCACHE")) {
+        std::fprintf(stderr, "[DBCACHE] step=%d %s (hits=%d misses=%d)\n",
+            cache.step, use_cache ? "HIT" : "MISS", cache.hits, cache.misses);
+    }
 }
 
 // ============================================================================
@@ -229,7 +365,7 @@ void Model::Impl::run_estimator(
     const int D = cfg.embedding_dim;
     const int S = N + T;
 
-    StageCtx s(backend, 768 * 1024 * 1024, 32768);
+    StageCtx s(backend, 512 * 1024 * 1024, 16384);
 
     ggml_tensor * xest        = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
     ggml_tensor * regions_mod = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
@@ -243,6 +379,7 @@ void Model::Impl::run_estimator(
 
     ggml_set_output(outs.pool_logits);
     ggml_build_forward_expand(s.graph, outs.pool_logits);
+    s.dump_backend_support("estimator");
     s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (estimator)");
 
@@ -384,6 +521,18 @@ InferResult Model::Impl::infer_with_rng(
     std::vector<float> ts = params.d3pm_ts.empty()
         ? default_d3pm_schedule(params.d3pm_t0, params.d3pm_nsteps)
         : params.d3pm_ts;
+
+    // DBCache: configure + reset per segment (mirrors PyTorch reset on
+    // forward_segmenter_main).
+    seg_cache.enabled   = params.db_cache_threshold > 0.0f;
+    seg_cache.threshold = params.db_cache_threshold;
+    seg_cache.fn_blocks = params.db_cache_fn_blocks;
+    seg_cache.warmup    = params.db_cache_warmup;
+    seg_cache.reset();
+    if (seg_cache.enabled) {
+        std::fprintf(stderr, "DBCache: threshold=%.3f fn_blocks=%d warmup=%d\n",
+            seg_cache.threshold, seg_cache.fn_blocks, seg_cache.warmup);
+    }
 
     std::vector<std::uint8_t> known(T, 0);
     std::vector<std::uint8_t> mask(T, 1);

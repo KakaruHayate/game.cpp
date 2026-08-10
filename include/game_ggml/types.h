@@ -37,6 +37,13 @@ struct InferParams {
     // Seed for the internal Mersenne Twister that drives the D3PM random
     // boundary removal.  Set to a fixed value for reproducible runs.
     std::uint64_t seed = 0;
+
+    // DBCache (cache-dit style) for the segmenter across D3PM steps.
+    // When enabled (threshold > 0), the tail block stack is skipped on steps
+    // whose front-block residual delta falls below `db_cache_threshold`.
+    float db_cache_threshold  = 0.0f;   // 0 = disabled; 0.25 recommended
+    int   db_cache_fn_blocks  = 1;      // front (warmup) blocks always executed
+    int   db_cache_warmup     = 1;      // full passes before hits are allowed
 };
 
 // Full-clip inference result.

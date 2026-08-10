@@ -2,6 +2,10 @@
 
 #include <ggml.h>
 
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
 namespace game_ggml::internal::ops {
 
 ggml_tensor * rms_norm(ggml_context * ctx,
@@ -40,6 +44,66 @@ ggml_tensor * embedding(ggml_context * ctx,
                         ggml_tensor * weight,
                         ggml_tensor * indices) {
     return ggml_get_rows(ctx, weight, indices);
+}
+
+// ---------------------------------------------------------------------------
+// Depthwise 1D conv (same padding)
+// ---------------------------------------------------------------------------
+
+namespace {
+bool g_direct_dwconv = true;   // CPU-only build default; set at model load
+}
+
+void set_direct_dwconv(bool enable) { g_direct_dwconv = enable; }
+bool direct_dwconv() { return g_direct_dwconv; }
+
+ggml_tensor * dwconv_1d(ggml_context * ctx,
+                        ggml_tensor * w_dw,
+                        ggml_tensor * x,
+                        int kernel_size,
+                        int pad) {
+    // Runtime override for debugging / A-B comparison:
+    //   GAME_GGML_DWCONV=legacy  forces the im2col path on any backend.
+    bool direct = g_direct_dwconv;
+    if (const char * env = std::getenv("GAME_GGML_DWCONV"); env && *env) {
+        direct = (std::strncmp(env, "legacy", 6) != 0);
+    }
+
+    if (direct) {
+        // Express the 1D depthwise conv as a 2D depthwise conv with H=1 so it
+        // runs through ggml's dedicated per-channel kernel (GGML_OP_CONV_2D_DW,
+        // whcn path) instead of the im2col + F16 mul_mat path of
+        // ggml_conv_1d_dw.  Layout mapping:
+        //   w_dw ne=(K, 1, C)          -> kernel ne=(K, 1, 1, C)   (OC=C, IC=1)
+        //   x    ne=(T, C, B)          -> input  ne=(T, 1, C, B)   (W=T, H=1)
+        //   out  ne=(T, 1, C, B)       -> ne=(T, C, B)
+        // Memory order stays [k][c] / [t][c][b] which is exactly what the
+        // whcn kernel reads (channel-major kernel rows, channel-major input).
+        const int64_t K = w_dw->ne[0];
+        const int64_t C = w_dw->ne[2];
+        const int64_t T = x->ne[0];
+        const int64_t B = x->ne[2];
+        // The whcn kernel reads the kernel through a float* — only F32 is
+        // supported; the depthwise weights may be stored F16 in the GGUF.
+        ggml_tensor * w = (w_dw->type == GGML_TYPE_F32)
+            ? w_dw : ggml_cast(ctx, w_dw, GGML_TYPE_F32);
+        ggml_tensor * w4 = ggml_reshape_4d(ctx, w, K, 1, 1, C);
+        ggml_tensor * x4 = ggml_reshape_4d(ctx, x, T, 1, C, B);
+        if (std::getenv("GAME_GGML_DUMP_DWCONV")) {
+            std::fprintf(stderr, "[DWCONV] direct K=%lld C=%lld T=%lld B=%lld w=%s x=%s\n",
+                (long long) K, (long long) C, (long long) T, (long long) B,
+                ggml_type_name(w_dw->type), ggml_type_name(x->type));
+        }
+        ggml_tensor * y4 = ggml_conv_2d_dw_direct(ctx, w4, x4,
+            /*s0=*/1, /*s1=*/1, /*p0=*/pad, /*p1=*/0, /*d0=*/1, /*d1=*/1);
+        return ggml_reshape_3d(ctx, y4, T, C, B);
+    }
+
+    // Legacy path (Vulkan/Metal): ggml_conv_1d_dw -> im2col_f16 requires the
+    // kernel to be F16; cast the static weight when it is stored F32.
+    ggml_tensor * w_f16 = (w_dw->type == GGML_TYPE_F16)
+        ? w_dw : ggml_cast(ctx, w_dw, GGML_TYPE_F16);
+    return ggml_conv_1d_dw(ctx, w_f16, x, /*s0=*/1, /*p0=*/pad, /*d0=*/1);
 }
 
 }  // namespace game_ggml::internal::ops
