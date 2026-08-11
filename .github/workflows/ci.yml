@@ -55,13 +55,17 @@ jobs:
       - name: Convert checkpoint and prepare backend config
         run: |
           mkdir -p model
-          # FP32 baseline (backward-compatible default for OpenUtau).
+          # FP32 baseline: kept only as an in-CI size sanity reference for the
+          # quantized check below; NOT shipped in packages (OpenUtau loads the
+          # largest *.gguf in the package dir, so shipping both would silently
+          # pick the 189 MB F32 and waste the 55 MB Q8_0).
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
             -o model/game_medium.gguf
           # Quantized Q8_0 GGUF (recommended for CPU/Vulkan: ~3.4x smaller,
           # note-level near-lossless).  Hard constraints enforced by the
           # converter: depthwise convs -> F16, norms/scales/biases -> F32.
+          # This is the only GGUF shipped in release packages.
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
             -o model/game_medium_q8.gguf \
@@ -295,13 +299,19 @@ jobs:
           fi
 
           # Model and OpenUtau backend config.
-          cp model/game_medium.gguf model/game_medium_q8.gguf model/config.json "$PKG/"
+          # OpenUtau's GameGgmlBackend picks the largest *.gguf in the package
+          # dir (OrderByDescending(Length)), so shipping both F32 and Q8_0 here
+          # would silently make it load the 189 MB F32 and waste the 55 MB Q8_0.
+          # Ship only the quantized Q8_0, named game_medium.gguf (the CLI/docs
+          # convention; the backend globs by extension, not name).
+          cp model/game_medium_q8.gguf "$PKG/game_medium.gguf"
+          cp model/config.json "$PKG/"
 
           # oudep manifest
           cat > "$PKG/oudep.yaml" <<EOF
           id: game-ggml-medium
           version: 0.1.0
-          description: GAME GGML inference engine (${{ matrix.name }}) + medium GGUF weights
+          description: GAME GGML inference engine (${{ matrix.name }}) + Q8_0 quantized medium GGUF weights
           entrypoints:
             - loader: Executable
               path: $BIN
@@ -310,7 +320,6 @@ jobs:
           # OpenUtau expects all of these files at the package root.
           test -x "$PKG/$BIN"
           test -s "$PKG/game_medium.gguf"
-          test -s "$PKG/game_medium_q8.gguf"
           test -s "$PKG/config.json"
           test -s "$PKG/oudep.yaml"
           grep -Fx "id: game-ggml-medium" "$PKG/oudep.yaml"
@@ -346,7 +355,6 @@ jobs:
             name=$(basename "$dir")
             test -s "$dir/oudep.yaml"
             test -s "$dir/game_medium.gguf"
-            test -s "$dir/game_medium_q8.gguf"
             test -s "$dir/config.json"
             (
               cd "$dir"
@@ -358,7 +366,6 @@ jobs:
           for package in *.oudep; do
             test "$(unzip -Z1 "$package" | grep -c '^oudep.yaml$')" -eq 1
             test "$(unzip -Z1 "$package" | grep -c '^game_medium.gguf$')" -eq 1
-            test "$(unzip -Z1 "$package" | grep -c '^game_medium_q8.gguf$')" -eq 1
             test "$(unzip -Z1 "$package" | grep -c '^config.json$')" -eq 1
           done
           ls -lh *.oudep
