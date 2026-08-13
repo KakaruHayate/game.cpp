@@ -1,14 +1,14 @@
-# Building from source · 从源码构建
+# Building from source
+
+> **Languages:** [English](README.md) | [中文](README_CN.md)
 
 This document covers how to build `game_ggml_cli` from source on Linux, macOS and
 Windows.  The project is self-contained — all dependencies are pulled via CMake
 FetchContent at configure time.
 
-本文档覆盖在 Linux、macOS、Windows 上从源码构建 `game_ggml_cli`。项目自包含——所有依赖在 configure 时经 CMake FetchContent 拉取。
+## Prerequisites
 
-## Prerequisites · 前置要求
-
-### Linux · Linux
+### Linux
 
 ```bash
 # Build tools
@@ -30,7 +30,7 @@ sudo apt install libvulkan-dev vulkan-tools
 sudo apt install ccache
 ```
 
-### macOS · macOS
+### macOS
 
 ```bash
 # Xcode Command Line Tools
@@ -44,7 +44,7 @@ brew install cmake ccache
 #   cmake -DCMAKE_OSX_ARCHITECTURES=x86_64 ...
 ```
 
-### Windows · Windows
+### Windows
 
 ```bash
 # Visual Studio 2022+ with "Desktop development with C++" workload
@@ -62,7 +62,7 @@ brew install cmake ccache
 # CUDA 12.6 supports Visual Studio 2022 / MSVC 193x.
 ```
 
-## Quick start · 快速开始
+## Quick start
 
 ```bash
 # Clone
@@ -81,7 +81,7 @@ cmake --build build -j
 build/bin/game_ggml_cli --version
 ```
 
-## Backend selection · 后端选择
+## Backend selection
 
 Pass one (or more) of these flags to the **Configure** step:
 
@@ -94,7 +94,7 @@ Pass one (or more) of these flags to the **Configure** step:
 If no GPU backend is enabled, the CPU backend is used as fallback.  The best
 available backend is selected automatically at runtime.
 
-### Examples · 示例
+### Examples
 
 ```bash
 # Linux + Vulkan
@@ -133,7 +133,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release `
                -DCMAKE_CUDA_ARCHITECTURES="75"
 ```
 
-## Converting a PyTorch checkpoint to GGUF · 转换 PyTorch 权重为 GGUF
+## Converting a PyTorch checkpoint to GGUF
 
 The medium model checkpoint can be downloaded from
 [OpenVPI releases](https://github.com/openvpi/GAME/releases/download/v1.0.0/GAME-1.0-medium.zip).
@@ -161,7 +161,7 @@ Expected output for the medium model:
   tensors      : 671
 ```
 
-## Running inference · 运行推理
+## Running inference
 
 ```bash
 # Single file
@@ -211,7 +211,7 @@ recommended. The packages currently expect the CUDA 12 runtime and cuBLAS
 libraries to be installed on the target system; they do not bundle NVIDIA's
 runtime libraries or the driver (`nvcuda.dll` comes from the NVIDIA driver).
 
-## Troubleshooting · 故障排查
+## Troubleshooting
 
 ### CUDA Toolkit not found
 
@@ -219,7 +219,7 @@ Ensure `nvcc --version` succeeds and that `CUDA_PATH` (or the platform-specific
 Toolkit environment) points to the intended installation. Delete `build/` before
 reconfiguring after changing CUDA Toolkit versions.
 
-### glslc not found (Linux/Windows Vulkan) · glslc 未找到（Linux/Windows Vulkan）
+### glslc not found (Linux/Windows Vulkan)
 
 The Vulkan SDK's `glslc` compiler is required by the ggml-vulkan backend.  If
 `FindVulkan` reports `glslc` as missing, ensure the SDK is installed and its
@@ -235,7 +235,7 @@ set VULKAN_SDK=C:\VulkanSDK\1.4.304.1
 set PATH=%VULKAN_SDK%\Bin;%PATH%
 ```
 
-### `unknown target CPU 'apple-m1'` (macOS x86_64 cross-compile) · `unknown target CPU 'apple-m1'`（macOS x86_64 交叉编译）
+### `unknown target CPU 'apple-m1'` (macOS x86_64 cross-compile)
 
 When cross-compiling for Intel Mac on an Apple Silicon runner, the CPU backend
 mistakenly detects the host as `apple-m1`.  Disable native CPU detection:
@@ -244,7 +244,7 @@ mistakenly detects the host as `apple-m1`.  Disable native CPU detection:
 cmake -B build -DGGML_NATIVE=OFF ...
 ```
 
-### `FetchContent` download failures · `FetchContent` 下载失败
+### `FetchContent` download failures
 
 Dependencies are fetched via Git at configure time.  If you are behind a proxy:
 
