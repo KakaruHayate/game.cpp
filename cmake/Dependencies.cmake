@@ -66,7 +66,7 @@ endfunction()
 FetchContent_Declare(
     ggml
     GIT_REPOSITORY https://github.com/ggerganov/ggml.git
-    GIT_TAG        v0.11.0
+    GIT_TAG        v0.19.0
     GIT_SHALLOW    TRUE
 )
 
