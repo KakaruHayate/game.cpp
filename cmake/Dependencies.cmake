@@ -60,6 +60,28 @@ function(game_ggml_apply_patch source_dir patch_file patch_name)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# SPIRV-Headers shim (Windows Vulkan only)
+#
+# ggml v0.19.0's Vulkan backend hard-requires find_package(SPIRV-Headers CONFIG).
+# Windows Vulkan SDKs older than ~1.4.35x ship the headers but not that CMake
+# config file, so the windows-x64-vulkan CI job fails at configure time.
+# Generate a minimal config pointing at the SDK headers when the SDK doesn't
+# already provide one; headers live under <SDK>/Include/spirv-headers.
+# ---------------------------------------------------------------------------
+if(GAME_GGML_VULKAN AND WIN32 AND NOT EXISTS "$ENV{VULKAN_SDK}/Lib/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake")
+    string(REPLACE "\\" "/" _spirv_inc "$ENV{VULKAN_SDK}/Include")
+    set(_spirv_cfg_dir "${CMAKE_BINARY_DIR}/SPIRV-Headers")
+    file(MAKE_DIRECTORY "${_spirv_cfg_dir}")
+    file(WRITE "${_spirv_cfg_dir}/SPIRV-HeadersConfig.cmake"
+        "set(SPIRV-Headers_FOUND TRUE)\n"
+        "if(NOT TARGET SPIRV-Headers::SPIRV-Headers)\n"
+        "    add_library(SPIRV-Headers::SPIRV-Headers INTERFACE IMPORTED)\n"
+        "    set_target_properties(SPIRV-Headers::SPIRV-Headers PROPERTIES INTERFACE_INCLUDE_DIRECTORIES \"${_spirv_inc}\")\n"
+        "endif()\n")
+    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
+endif()
+
+# ---------------------------------------------------------------------------
 # ggml (MIT) — tensor engine.
 # Fetched + Metal binary-archive patch applied on Apple for fast cold start.
 # ---------------------------------------------------------------------------
