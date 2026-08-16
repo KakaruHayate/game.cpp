@@ -14,7 +14,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'feature/**']
     tags: ['v*']
   pull_request: {}
   workflow_dispatch: {}
@@ -55,9 +55,21 @@ jobs:
       - name: Convert checkpoint and prepare backend config
         run: |
           mkdir -p model
+          # FP32 baseline: kept only as an in-CI size sanity reference for the
+          # quantized check below; NOT shipped in packages (OpenUtau loads the
+          # largest *.gguf in the package dir, so shipping both would silently
+          # pick the 189 MB F32 and waste the 55 MB Q8_0).
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
             -o model/game_medium.gguf
+          # Quantized Q8_0 GGUF (recommended for CPU/Vulkan: ~3.4x smaller,
+          # note-level near-lossless).  Hard constraints enforced by the
+          # converter: depthwise convs -> F16, norms/scales/biases -> F32.
+          # This is the only GGUF shipped in release packages.
+          python scripts/convert_pt_to_gguf.py \
+            --model-dir GAME-1.0-medium \
+            -o model/game_medium_q8.gguf \
+            --quant-config scripts/quant_all_q8.json
           cat > model/config.json <<'EOF'
           {
             "samplerate": 44100,
@@ -75,6 +87,9 @@ jobs:
       - name: Verify model files
         run: |
           test -s model/game_medium.gguf
+          test -s model/game_medium_q8.gguf
+          # sanity: the quantized GGUF must be (much) smaller than FP32
+          test "$(stat -c%s model/game_medium_q8.gguf)" -lt "$(( $(stat -c%s model/game_medium.gguf) / 2 ))"
           python -m json.tool model/config.json >/dev/null
           ls -lh model/
 
@@ -192,9 +207,12 @@ jobs:
           path: build/_deps
           # FetchContent stores generator-specific subbuild state here, so do not
           # share it between VS 2022/2026 runners or between different backends.
-          key: ${{ matrix.name }}-deps-${{ hashFiles('cmake/Dependencies.cmake') }}
+          # v2: this repo was renamed (game_ggml_cli -> game.cpp), changing the
+          # runner workspace path; old cache entries embed the pre-rename
+          # absolute path and must not be restored.
+          key: ${{ matrix.name }}-deps-v2-${{ hashFiles('cmake/Dependencies.cmake') }}
           restore-keys: |
-            ${{ matrix.name }}-deps-
+            ${{ matrix.name }}-deps-v2-
 
       - name: Configure
         run: |
@@ -284,13 +302,19 @@ jobs:
           fi
 
           # Model and OpenUtau backend config.
-          cp model/game_medium.gguf model/config.json "$PKG/"
+          # OpenUtau's GameGgmlBackend picks the largest *.gguf in the package
+          # dir (OrderByDescending(Length)), so shipping both F32 and Q8_0 here
+          # would silently make it load the 189 MB F32 and waste the 55 MB Q8_0.
+          # Ship only the quantized Q8_0, named game_medium.gguf (the CLI/docs
+          # convention; the backend globs by extension, not name).
+          cp model/game_medium_q8.gguf "$PKG/game_medium.gguf"
+          cp model/config.json "$PKG/"
 
           # oudep manifest
           cat > "$PKG/oudep.yaml" <<EOF
           id: game-ggml-medium
           version: 0.1.0
-          description: GAME GGML inference engine (${{ matrix.name }}) + medium GGUF weights
+          description: GAME GGML inference engine (${{ matrix.name }}) + Q8_0 quantized medium GGUF weights
           entrypoints:
             - loader: Executable
               path: $BIN

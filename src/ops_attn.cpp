@@ -115,12 +115,12 @@ ggml_tensor * pac(
 
     // Optional depthwise conv on the concatenated channels.
     if (W.merge_kernel_size != 0 && W.w_merge_dw) {
-        // Permute (2D, T, B) → (T, 2D, B) for ggml_conv_1d_dw input layout.
+        // Permute (2D, T, B) → (T, 2D, B) for the depthwise conv layout.
         ggml_tensor * m_tr = ggml_cont(ctx, ggml_permute(ctx, m, 1, 0, 2, 3));
         const int stride = 1;
         const int pad    = (W.merge_kernel_size - 1) / 2;
         const int dil    = 1;
-        ggml_tensor * cv = ggml_conv_1d_dw(ctx, W.w_merge_dw, m_tr, stride, pad, dil);
+        ggml_tensor * cv = dwconv_1d(ctx, W.w_merge_dw, m_tr, W.merge_kernel_size, pad);
         // Per-channel bias: (2D,) broadcast over (T, 2D, B) — view with ne=(1, 2D, 1, 1).
         if (W.b_merge_dw) {
             const size_t esize = ggml_element_size(W.b_merge_dw);

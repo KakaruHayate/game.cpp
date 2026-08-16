@@ -114,7 +114,8 @@ ggml_tensor * cgmlp(ggml_context * ctx,
     const int stride = 1;
     const int pad    = (kernel_size - 1) / 2;
     const int dil    = 1;
-    ggml_tensor * conv = ggml_conv_1d_dw(ctx, w_dw, x2_tr, stride, pad, dil);  // (T, L, B)
+    // CPU: dedicated per-channel kernel (no im2col); Vulkan: conv_1d_dw.
+    ggml_tensor * conv = dwconv_1d(ctx, w_dw, x2_tr, kernel_size, pad);  // (T, L, B)
     conv = add_conv_bias(ctx, conv, b_dw);
     if (use_dw_act) conv = ggml_gelu(ctx, conv);
 

@@ -1,0 +1,10 @@
+{
+  "*.weight": "Q8_0",
+  "encoder.*.weight": "Q8_0",
+  "segmenter.*.weight": "Q8_0",
+  "estimator.*.weight": "Q8_0",
+  "spectrogram_projection.weight": "Q8_0",
+  "time_embedding.*.weight": "Q8_0",
+  "*.embedding.weight": "Q8_0",
+  "pool_token_gen.emb": "Q8_0"
+}

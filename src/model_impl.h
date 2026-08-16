@@ -23,6 +23,33 @@ namespace game_ggml::internal { class IRandomSource; }
 
 namespace game_ggml {
 
+// Cross-step cache state for the segmenter (DBCache).  Lives on the Impl so
+// it persists across the nsteps D3PM iterations of one audio segment; reset
+// at the start of every segment.
+struct SegmenterCacheState {
+    bool enabled = false;
+    float threshold = 0.25f;
+    int   fn_blocks = 1;
+    int   warmup    = 1;
+
+    int   step  = 0;
+    int   hits  = 0;
+    int   misses = 0;
+
+    std::vector<float> prev_front;   // x_front of the previous step
+    std::vector<float> tail_delta;   // x_out - x_front of the previous full pass
+    bool valid = false;              // tail_delta / prev_front available
+
+    void reset() {
+        step = 0;
+        hits = 0;
+        misses = 0;
+        prev_front.clear();
+        tail_delta.clear();
+        valid = false;
+    }
+};
+
 struct Model::Impl {
     GameModelConfig cfg;
     ggml_backend_t  backend = nullptr;
@@ -33,6 +60,9 @@ struct Model::Impl {
 
     // Front-end.
     std::unique_ptr<MelExtractor> mel_extractor;
+
+    // DBCache state for the segmenter (cross-D3PM-step).
+    SegmenterCacheState seg_cache;
 
     // Top-level weights outside the three sub-models.
     ggml_tensor * w_spec_proj = nullptr;
