@@ -207,9 +207,12 @@ jobs:
           path: build/_deps
           # FetchContent stores generator-specific subbuild state here, so do not
           # share it between VS 2022/2026 runners or between different backends.
-          key: ${{ matrix.name }}-deps-${{ hashFiles('cmake/Dependencies.cmake') }}
+          # v2: this repo was renamed (game_ggml_cli -> game.cpp), changing the
+          # runner workspace path; old cache entries embed the pre-rename
+          # absolute path and must not be restored.
+          key: ${{ matrix.name }}-deps-v2-${{ hashFiles('cmake/Dependencies.cmake') }}
           restore-keys: |
-            ${{ matrix.name }}-deps-
+            ${{ matrix.name }}-deps-v2-
 
       - name: Configure
         run: |
