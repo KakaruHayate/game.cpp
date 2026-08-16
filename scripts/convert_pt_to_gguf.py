@@ -55,7 +55,7 @@ log = logging.getLogger("convert_pt_to_gguf")
 # backwards-incompatible way (new required metadata, different tensor layout).
 # -----------------------------------------------------------------------------
 GAME_ARCH = "game-me"
-GAME_ARCH_VERSION = 1
+GAME_ARCH_VERSION = 2   # v2: attn q_linear/kv_linear fused into qkv (llama-style)
 
 
 @dataclass
@@ -184,10 +184,11 @@ def _ebf_backbone_keys(prefix: str, backbone_cfg: dict, *, return_latent: bool) 
                 f"{block}.ffn2.ln2.weight", f"{block}.ffn2.ln2.bias",
                 f"{block}.norm2.weight",
             })
-        # PAC (self-attn + CgMLP merged)
+        # PAC (self-attn + CgMLP merged).  q_linear/kv_linear are fused at
+        # conversion time into a single qkv (llama-style): one [3*H*D, D]
+        # linear instead of [H*D, D] + [2*H*D, D].
         keys.update({
-            f"{block}.attn.attn.q_linear.weight",  f"{block}.attn.attn.q_linear.bias",
-            f"{block}.attn.attn.kv_linear.weight", f"{block}.attn.attn.kv_linear.bias",
+            f"{block}.attn.attn.qkv.weight", f"{block}.attn.attn.qkv.bias",
             f"{block}.attn.attn.out_linear.weight", f"{block}.attn.attn.out_linear.bias",
             f"{block}.attn.c.pw1.weight", f"{block}.attn.c.pw1.bias",
             f"{block}.attn.c.norm.weight",
@@ -556,8 +557,21 @@ def convert(model_dir: pathlib.Path, output_path: pathlib.Path, *, strict: bool,
     log.info("stripped prefix '%s' from %d tensors", prefix, len(sd))
 
     # --- audit ---
+    # q_linear/kv_linear are fused into qkv at write time; reflect that in the
+    # expected-vs-present comparison so the audit sees the emitted names.
+    def _fused_key(name: str) -> str:
+        if name.endswith("attn.attn.q_linear.weight"):
+            return name.replace("q_linear.weight", "qkv.weight")
+        if name.endswith("attn.attn.q_linear.bias"):
+            return name.replace("q_linear.bias", "qkv.bias")
+        if name.endswith("attn.attn.kv_linear.weight"):
+            return name.replace("kv_linear.weight", "qkv.weight")
+        if name.endswith("attn.attn.kv_linear.bias"):
+            return name.replace("kv_linear.bias", "qkv.bias")
+        return name
+
     expected = _expected_keys(cfg)
-    present  = set(sd)
+    present  = {_fused_key(k) for k in sd}
     missing  = sorted(expected - present)
     extras   = sorted(present - expected)
     if missing:
@@ -575,8 +589,42 @@ def convert(model_dir: pathlib.Path, output_path: pathlib.Path, *, strict: bool,
 
     total_params = 0
     quant_report: dict[str, str] = {}
+
+    # --- QKV fusion (llama-style): emit q_linear⊗kv_linear as one qkv tensor ---
+    # Rows are quant-block aligned on the in-dim and identical whether packed
+    # or separate, so Q8/etc. numbers are bit-identical to the un-fused form.
+    # Sorted state-dict order visits kv_linear before q_linear; whichever of
+    # the pair comes first fuses both and marks the sibling consumed.
+    writes: list[tuple[str, np.ndarray]] = []
+    consumed: set[str] = set()
     for name in sorted(sd):
-        arr = _tensor_to_np(sd[name])
+        if name in consumed:
+            continue
+        if name.endswith("attn.attn.q_linear.weight"):
+            kv = name.replace("q_linear.weight", "kv_linear.weight")
+            consumed.add(kv)
+            arr = np.concatenate([_tensor_to_np(sd[name]), _tensor_to_np(sd[kv])], axis=0)
+            writes.append((name.replace("q_linear.weight", "qkv.weight"), arr))
+        elif name.endswith("attn.attn.kv_linear.weight"):
+            q = name.replace("kv_linear.weight", "q_linear.weight")
+            consumed.add(q)
+            arr = np.concatenate([_tensor_to_np(sd[q]), _tensor_to_np(sd[name])], axis=0)
+            writes.append((name.replace("kv_linear.weight", "qkv.weight"), arr))
+        elif name.endswith("attn.attn.q_linear.bias"):
+            kv = name.replace("q_linear.bias", "kv_linear.bias")
+            consumed.add(kv)
+            arr = np.concatenate([_tensor_to_np(sd[name]), _tensor_to_np(sd[kv])], axis=0)
+            writes.append((name.replace("q_linear.bias", "qkv.bias"), arr))
+        elif name.endswith("attn.attn.kv_linear.bias"):
+            q = name.replace("kv_linear.bias", "q_linear.bias")
+            consumed.add(q)
+            arr = np.concatenate([_tensor_to_np(sd[q]), _tensor_to_np(sd[name])], axis=0)
+            writes.append((name.replace("kv_linear.bias", "qkv.bias"), arr))
+        else:
+            writes.append((name, _tensor_to_np(sd[name])))
+    del consumed
+
+    for name, arr in writes:
         qtype = resolve_tensor_type(name, arr, quant_rules or [])
         payload, eff = maybe_quantize(arr, qtype)
         # For block-quantized payloads the writer expects the *byte* shape and

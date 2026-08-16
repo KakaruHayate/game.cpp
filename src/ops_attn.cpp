@@ -17,23 +17,20 @@ namespace game_ggml::internal::ops {
 
 namespace {
 
-// Split a (2*D, T, B) tensor along ne[0] into two contiguous (D, T, B) views.
-// Both parts share memory with the input.
-struct ChunkPair {
-    ggml_tensor * first;
-    ggml_tensor * second;
-};
+// Split a (3*D, T, B) tensor along ne[0] into q/k/v views (fused QKV).
+struct QKVTriple { ggml_tensor * q; ggml_tensor * k; ggml_tensor * v; };
 
-ChunkPair chunk_two(ggml_context * ctx, ggml_tensor * x) {
-    const int64_t half = x->ne[0] / 2;
-    const size_t  esize = ggml_element_size(x);
-    ggml_tensor * a = ggml_view_4d(ctx, x,
-        half, x->ne[1], x->ne[2], x->ne[3],
-        x->nb[1], x->nb[2], x->nb[3], /*offset=*/0);
-    ggml_tensor * b = ggml_view_4d(ctx, x,
-        half, x->ne[1], x->ne[2], x->ne[3],
-        x->nb[1], x->nb[2], x->nb[3], /*offset=*/half * esize);
-    return {a, b};
+QKVTriple chunk_three(ggml_context * ctx, ggml_tensor * qkv) {
+    const int64_t D = qkv->ne[0] / 3;
+    const size_t  esize = ggml_element_size(qkv);
+    QKVTriple r;
+    r.q = ggml_view_4d(ctx, qkv, D, qkv->ne[1], qkv->ne[2], qkv->ne[3],
+        qkv->nb[1], qkv->nb[2], qkv->nb[3], /*offset=*/0);
+    r.k = ggml_view_4d(ctx, qkv, D, qkv->ne[1], qkv->ne[2], qkv->ne[3],
+        qkv->nb[1], qkv->nb[2], qkv->nb[3], /*offset=*/D * esize);
+    r.v = ggml_view_4d(ctx, qkv, D, qkv->ne[1], qkv->ne[2], qkv->ne[3],
+        qkv->nb[1], qkv->nb[2], qkv->nb[3], /*offset=*/2 * D * esize);
+    return r;
 }
 
 }  // namespace
@@ -50,13 +47,12 @@ ggml_tensor * attention_with_rope(
     const int64_t T = x->ne[1];
     const int64_t B = x->ne[2];
 
-    // Linear projections.
-    ggml_tensor * q   = linear(ctx, x, W.w_q,  W.b_q);        // (H*D, T, B)
-    ggml_tensor * kv  = linear(ctx, x, W.w_kv, W.b_kv);       // (2*H*D, T, B)
-    auto [k_flat, v_flat] = chunk_two(ctx, kv);
+    // Fused QKV projection (single [3*H*D, D] linear, then split).
+    ggml_tensor * qkv = linear(ctx, x, W.w_qkv, W.b_qkv);   // (3*H*D, T, B)
+    auto [q_flat, k_flat, v_flat] = chunk_three(ctx, qkv);
 
     // Reshape to (D, H, T, B) so RoPE can be applied (ne[2] == T).
-    ggml_tensor * qr = ggml_reshape_4d(ctx, ggml_cont(ctx, q),      head_dim, num_heads, T, B);
+    ggml_tensor * qr = ggml_reshape_4d(ctx, ggml_cont(ctx, q_flat), head_dim, num_heads, T, B);
     ggml_tensor * kr = ggml_reshape_4d(ctx, ggml_cont(ctx, k_flat), head_dim, num_heads, T, B);
     ggml_tensor * vr = ggml_reshape_4d(ctx, ggml_cont(ctx, v_flat), head_dim, num_heads, T, B);
 
