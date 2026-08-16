@@ -159,6 +159,11 @@ GPU 后端（Vulkan/Metal/CUDA）默认**关闭**：分离路径每步的 host �
 
 - 调参：`--cache-threshold <float>`（auto / 0 = 关闭 / 0.25…）、
   `--cache-fn-blocks <int>`、`--cache-warmup <int>`
+- 鲁棒性旋钮（借自 cache-dit/edge-dit.cpp）：复用窗口 `--cache-window-start/end`
+  （循环首尾步保持全算）、UCache 式累计误差门 `--cache-error-decay` +
+  `--cache-error-limit`、连续命中上限 `--cache-max-continuous`——默认即
+  纯每步阈值行为。`--cache-bn-blocks` 已实现但不推荐（中间/尾部切片多一次
+  host 往返，重新引入 fused-vs-split 漂移，实测音符 33→32）。
 - `--nsteps 1` 时即使设了阈值也会自动禁用缓存，保留零开销的单图 fused 路径
 
 ### 后端 × 权重选择指南
@@ -221,6 +226,15 @@ int main() {
     game_ggml::InferParams params;
     params.language = 4;   // 来自 lang_map: { "zh": 4 }
     params.seed     = 42;
+    // DBCache（跨步复用，仅 nsteps>1 生效）：
+    // -1 = 自动（CPU 0.25，GPU 关闭）；0 = 关闭；>0 = 显式阈值。
+    params.db_cache_threshold = 0.25f;
+    params.db_cache_fn_blocks = 1;
+    params.db_cache_warmup    = 1;
+    // 可选鲁棒性旋钮（默认与上文 CLI 的 --cache-* 开关一致）：
+    // params.db_cache_window_start = 0.0f; params.db_cache_window_end = 1.0f;
+    // params.db_cache_err_decay   = 0.0f;  params.db_cache_max_cont = 0;
+    // params.db_cache_bn_blocks   = 0;
 
     auto result = model.infer(waveform.data(), waveform.size(), params);
     for (const auto & n : result.notes) {
@@ -228,6 +242,9 @@ int main() {
         printf("  %.2fs + %.2fs : %.2f\n",
                n.offset_seconds, n.duration_seconds, n.pitch_midi);
     }
+    // 本次推理的 cache 命中/未中计数（关闭缓存时为 0/0）。
+    printf("  dbcache hits=%d misses=%d\n",
+           result.db_cache_hits, result.db_cache_misses);
 }
 ```
 
