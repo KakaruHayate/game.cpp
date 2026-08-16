@@ -4,6 +4,14 @@
 
 基于 [ggml](https://github.com/ggerganov/ggml) 的 [GAME](https://github.com/openvpi/GAME) 歌声转 MIDI 模型原生 C++ 推理实现，支持 CPU、Metal（Apple Silicon 默认）、CUDA、Vulkan；是 `python infer.py extract` 的运行时零 Python 依赖替代品。
 
+## 缘起与致谢（Origin & Credits）
+
+本工作起源于 [KCKT0112/GAME-ggml](https://github.com/KCKT0112/GAME-ggml)
+（原生 C++/ggml GAME 推理——CPU/Metal/CUDA/Vulkan）及其 Web 变体
+[KCKT0112/web-game](https://github.com/KCKT0112/web-game)（Web 生成式自适应
+MIDI 提取器）。我们沿用最早在那两个项目中移植的模型、算子集合与权重布局，
+并以 [GAME](https://github.com/openvpi/GAME) PyTorch 原版作为逐位对齐的参考基准。
+
 ## 特性亮点
 
 - **端到端 CLI** — WAV 输入，MIDI/TXT/CSV 输出（镜像 Python `extract`）

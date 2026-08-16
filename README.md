@@ -7,6 +7,15 @@ Native C++ inference for the [GAME](https://github.com/openvpi/GAME) singing-voi
 Apple Silicon), CUDA, or Vulkan.  Drop-in replacement for
 `python infer.py extract` with no Python dependency at runtime.
 
+## Origin & Credits
+
+This work grew out of [KCKT0112/GAME-ggml](https://github.com/KCKT0112/GAME-ggml)
+(native C++/ggml GAME inference — CPU/Metal/CUDA/Vulkan) and its web variant
+[KCKT0112/web-game](https://github.com/KCKT0112/web-game) (Web Generative
+Adaptive MIDI Extractor).  We build on the model, the operator set, and the
+weight layout first ported there, and retain the [GAME](https://github.com/openvpi/GAME)
+PyTorch original as the parity reference.
+
 ## Highlights
 
 - **End-to-end CLI** — WAV in, MIDI/TXT/CSV out (mirrors Python `extract`).
