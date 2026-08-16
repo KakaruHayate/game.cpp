@@ -67,3 +67,24 @@ Note count is reported only as a hint; it is not the "deterministic" evidence.
 
 Data/scripts: `dbcache_ablation/{bench_engine.py,ggml_n8.py,onnx_run.py,normalize.py,game_metric.py,report.py}`,
 CSVs in `dbcache_ablation/results/{canon,n8,*,torch_*,onnx_*}`.
+
+## Recommended EP configuration by platform
+
+| platform      | GPU           | weights | EP offered by oudep pkg | rationale (measured) |
+|---------------|---------------|---------|--------------------------|----------------------|
+| Windows       | NVIDIA        | F32     | CUDA (fallback Vulkan)   | cuda 6–8 s, +0.65–0.77 GiB |
+| Windows       | Intel/AMD/etc | F32     | Vulkan                   | 4–5 s, smallest VRAM +0.26–0.42 GiB |
+| Windows       | integrated    | F32/Q8  | CPU (+ DBCache on)       | 48.5→27.1 s (−44 %), quality-neutral |
+| Linux         | NVIDIA        | F32     | CUDA (fallback Vulkan)   | same as Windows CUDA |
+| Linux         | Nouveau/AMD   | F32     | Vulkan                   | same as Windows Vulkan |
+| macOS         | Apple Silicon | F32     | Metal (the only EP)      | not measured here; CI-build path |
+| macOS         | Intel         | F32     | Metal (cross-compiled)   | not measured here; CI-build path |
+
+Rules of thumb:
+- GPU present → **F32** weights; CPU-only → **CPU EP with DBCache** (default on).
+- On GPU, Vulkan = smallest VRAM (+0.3 GiB class), CUDA = fastest wall.
+- Q8 (~3.4× smaller weights, near-lossless) but may flip a boundary note on
+  Vulkan → choose the `-full` package when bit-consistent output matters;
+  otherwise either package is valid.
+- No user escalation needed: the CLI picks the backend from the GGUF/EP and
+  resolves cache by EP (GPU off, CPU auto).
