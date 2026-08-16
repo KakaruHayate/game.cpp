@@ -67,12 +67,21 @@ std::unique_ptr<Model::Impl> Model::Impl::load(const std::string & path) {
     impl->cfg     = internal::load_config(*impl->gguf);
     impl->backend = internal::init_best_backend();
 
-    // Depthwise convs: CPU uses the dedicated per-channel GGML_OP_CONV_2D_DW
-    // kernel (no im2col); every GPU backend (Vulkan/Metal/CUDA) falls back to
+    // Depthwise convs: use the dedicated per-channel GGML_OP_CONV_2D_DW kernel
+    // (no im2col) on every backend that implements it — CPU, Vulkan, Metal and
+    // CUDA all support it with an F32 kernel (our direct path casts the GGUF
+    // F16/F32 depthwise weight to F32).  Other/unknown backends fall back to
     // ggml_conv_1d_dw (im2col + F16 kernel).
-    const char * bname = internal::backend_name(impl->backend);
-    const bool is_cpu = (std::strcmp(bname, "cpu") == 0);
-    internal::ops::set_direct_dwconv(is_cpu);
+    {
+        std::string bn = internal::backend_name(impl->backend);
+        std::transform(bn.begin(), bn.end(), bn.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        const bool direct_ok = bn.find("cpu")    != std::string::npos ||
+                               bn.find("vulkan") != std::string::npos ||
+                               bn.find("cuda")   != std::string::npos ||
+                               bn.find("metal")  != std::string::npos;
+        internal::ops::set_direct_dwconv(direct_ok);
+    }
 
     impl->weights = std::make_unique<internal::LoadedWeights>(
         internal::LoadedWeights::load_all(*impl->gguf, impl->backend));

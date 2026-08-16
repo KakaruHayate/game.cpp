@@ -213,6 +213,11 @@ jobs:
         run: echo "GGML_NATIVE=OFF" >> "$GITHUB_ENV"
 
       - name: Cache CMake FetchContent
+        # GGML_NATIVE builds capture the runner's CPU (e.g. AVX-512) into the
+        # compiled objects; GitHub Action runners periodically rotate CPU
+        # generations, so restoring a cache built on another runner would ship
+        # Illegal-instruction binaries here.  Always build that one fresh.
+        if: matrix.name != 'linux-x64-cpu'
         uses: actions/cache@v4
         with:
           path: build/_deps
