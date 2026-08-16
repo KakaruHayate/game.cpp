@@ -118,6 +118,16 @@ jobs:
             pkg_ext: ""
             lib_glob: "libggml*.so*"
 
+          - os: ubuntu-latest
+            name: linux-x64-cpu
+            backend: cpu
+            # CPU-only package built with -march=native for the target simd
+            # (ggml then uses AVX2/AVX-512 etc. via GGML_NATIVE).
+            cmake_extra: "-DGGML_NATIVE=ON"
+            build_jobs: 4
+            pkg_ext: ""
+            lib_glob: "libggml*.so*"
+
           - os: ubuntu-22.04
             name: linux-x64-cuda
             backend: cuda
@@ -412,8 +422,8 @@ jobs:
           full_count=$(ls *.oudep | grep -vc -- '-q8\.oudep$') || true
           q8_count=$(ls *.oudep | grep -c -- '-q8\.oudep$') || true
           echo "full variants: $full_count  q8 variants: $q8_count"
-          test "$full_count" -eq 6
-          test "$q8_count" -eq 6
+          test "$full_count" -eq 7
+          test "$q8_count" -eq 7
           ls -lh *.oudep
 
       - name: Publish release
