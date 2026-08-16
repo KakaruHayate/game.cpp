@@ -50,11 +50,12 @@ ggml_tensor * embedding(ggml_context * ctx,
 //   - `x`:    ne=(T, C, B), contiguous.
 //   - returns ne=(T, C, B).
 // Two implementations:
-//   * direct: GGML_OP_CONV_2D_DW (dedicated per-channel CPU kernel, no im2col)
-//             — only available on the CPU backend.
-//   * legacy: ggml_conv_1d_dw (im2col + mul_mat), used on all GPU backends
-//             (Vulkan/Metal/CUDA) where direct is not used; requires an F16
-//             kernel.
+//   * direct: GGML_OP_CONV_2D_DW (dedicated per-channel kernel, no im2col)
+//             — used on every backend that implements it: CPU, Vulkan,
+//             Metal and CUDA (all accept an F32 kernel).
+//   * legacy: ggml_conv_1d_dw (im2col + mul_mat), used on backends without a
+//             CONV_2D_DW kernel, and forceable via GAME_GGML_DWCONV=legacy;
+//             requires an F16 kernel.
 // The selected mode is a per-thread flag set from the backend capability at
 // model load time; GAME_GGML_DWCONV=legacy|direct can force it per process
 // (unknown values ignored).
