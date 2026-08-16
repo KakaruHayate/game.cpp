@@ -163,6 +163,20 @@ estimator   ~0.06 s  (~ 6%)   x_est + regions → notes  (4× JEBF + joint attn)
 Segmenter dominates because D3PM loops it `--nsteps` times.  Default `1`
 keeps it cheap; bump to `4` or `8` for higher quality at linear cost.
 
+### DBCache（多步加速，默认开启）
+
+For `--nsteps > 1`, a cross-step DBCache is **on by default** (threshold
+0.25, front blocks 1, warmup 1): when the segmenter's front-block residual
+between consecutive D3PM steps is below the threshold, the tail blocks are
+skipped and the previous step's tail delta is reused — a near-lossless
+approximation (~0.2–0.3 cents pitch drift, no note-count change in the
+ablation) that cuts nsteps=8 segmenter wall time roughly in half.
+
+- Tuning: `--cache-threshold <float>`（0 = off）, `--cache-fn-blocks <int>`,
+  `--cache-warmup <int>`.
+- With `--nsteps 1` the cache is automatically disabled even if a threshold is
+  set, keeping the fused single-graph path with zero overhead.
+
 ## Reproducing the benchmark
 
 ```bash
