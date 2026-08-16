@@ -104,6 +104,15 @@ if(NOT ggml_POPULATED)
         )
     endif()
 
+    # Vulkan cold-start fix: persist VkPipelineCache to disk.  Apply on every
+    # build (the patch only touches ggml-vulkan.cpp, compiled only when the
+    # Vulkan backend is enabled) so CPU-only and GPU builds share one source.
+    game_ggml_apply_patch(
+        "${ggml_SOURCE_DIR}"
+        "${CMAKE_CURRENT_LIST_DIR}/patches/ggml-vulkan-pipeline-cache.patch"
+        "ggml Vulkan disk-backed VkPipelineCache"
+    )
+
     add_subdirectory("${ggml_SOURCE_DIR}" "${ggml_BINARY_DIR}")
 endif()
 

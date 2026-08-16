@@ -199,9 +199,12 @@ configs produce identical note output):
   is limited.
 - CPU benefits from Q8 for memory, at essentially the same speed — use the
   `-q8` pack on CPU.
-- Cold start: the first inference on a GPU compiles shaders
-  (Vulkan/Metal). NVIDIA's driver caches these across runs; expect a couple
-  of extra seconds on the very first invocation.
+- Cold start: the first inference on a GPU compiles shaders (Vulkan/Metal).
+  Metal uses an in-repo binary-archive PSO cache; **Vulkan now persists a
+  disk-backed `VkPipelineCache`** (`cmake/patches/ggml-vulkan-pipeline-cache.*`,
+  `GGML_VK_PIPELINE_CACHE_PATH`, default under the user cache dir), so later
+  launches load precompiled PSOs instead of recompiling — no reliance on
+  driver-level caches.
 
 ## Reproducing the benchmark
 

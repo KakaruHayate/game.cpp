@@ -1,0 +1,5 @@
+# Patches are applied with `git apply` during CMake configure; they must keep
+# LF line endings on every platform (Windows checkout otherwise rewrites LFs to
+# CRLF, making the patch unapplicable).
+*.patch text eol=lf
+*.md     text eol=lf
