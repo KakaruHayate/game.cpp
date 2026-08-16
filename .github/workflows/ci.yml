@@ -55,17 +55,16 @@ jobs:
       - name: Convert checkpoint and prepare backend config
         run: |
           mkdir -p model
-          # FP32 baseline: kept only as an in-CI size sanity reference for the
-          # quantized check below; NOT shipped in packages (OpenUtau loads the
-          # largest *.gguf in the package dir, so shipping both would silently
-          # pick the 189 MB F32 and waste the 55 MB Q8_0).
+          # Full-precision baseline GGUF (F32).  Shipped in the "-full"
+          # package variants; kept also as an in-CI size sanity reference
+          # for the quantized check below.
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
             -o model/game_medium.gguf
           # Quantized Q8_0 GGUF (recommended for CPU/Vulkan: ~3.4x smaller,
           # note-level near-lossless).  Hard constraints enforced by the
           # converter: depthwise convs -> F16, norms/scales/biases -> F32.
-          # This is the only GGUF shipped in release packages.
+          # Shipped in the "-q8" package variants only.
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
             -o model/game_medium_q8.gguf \
@@ -280,39 +279,55 @@ jobs:
           name: game-ggml-medium-model
           path: model
 
-      - name: Package .oudep
+      - name: Package .oudep (full + quantized variants)
         run: |
           set -euo pipefail
           BIN="game_ggml_cli${{ matrix.pkg_ext }}"
-          PKG="game_ggml-${{ matrix.name }}"
-          mkdir -p "$PKG"
+          # Two sibling packages per platform, identical binaries/config but
+          # different model weights:
+          #   game_ggml-<name>     -> game_medium.gguf = F32 (full precision)
+          #   game_ggml-<name>-q8  -> game_medium.gguf = Q8_0 (quantized)
+          # OpenUtau's GameGgmlBackend loads the largest *.gguf in a single
+          # package dir, so each variant must contain exactly one model file.
+          PKG_FULL="game_ggml-${{ matrix.name }}"
+          PKG_Q8="${PKG_FULL}-q8"
+          for pkg in "$PKG_FULL" "$PKG_Q8"; do mkdir -p "$pkg"; done
 
           # CLI binary
-          cp "build/bin/$BIN" "$PKG/"
-
+          cp "build/bin/$BIN" "$PKG_FULL/"
           # Shared libraries
-          find build/bin -maxdepth 1 -name "${{ matrix.lib_glob }}" -exec cp {} "$PKG/" \;
-          compgen -G "$PKG/${{ matrix.lib_glob }}" >/dev/null
+          find build/bin -maxdepth 1 -name "${{ matrix.lib_glob }}" -exec cp {} "$PKG_FULL/" \;
+          compgen -G "$PKG_FULL/${{ matrix.lib_glob }}" >/dev/null
 
-          # macOS: include the pre-compiled Metal shader cache.
+          # macOS: include the pre-compiled Metal shader cache (one per package).
           if [ "${{ runner.os }}" = "macOS" ]; then
             METALLIB=$(find build -name "default.metallib" -type f -print -quit)
             test -n "$METALLIB"
-            cp "$METALLIB" "$PKG/"
+            cp "$METALLIB" "$PKG_FULL/"
           fi
 
-          # Model and OpenUtau backend config.
-          # OpenUtau's GameGgmlBackend picks the largest *.gguf in the package
-          # dir (OrderByDescending(Length)), so shipping both F32 and Q8_0 here
-          # would silently make it load the 189 MB F32 and waste the 55 MB Q8_0.
-          # Ship only the quantized Q8_0, named game_medium.gguf (the CLI/docs
-          # convention; the backend globs by extension, not name).
-          cp model/game_medium_q8.gguf "$PKG/game_medium.gguf"
-          cp model/config.json "$PKG/"
+          # Quanized variant: clone binaries/libs/metallib, swap the weights.
+          cat "$PKG_FULL/$BIN" > "$PKG_Q8/$BIN"
+          find build/bin -maxdepth 1 -name "${{ matrix.lib_glob }}" -exec cp {} "$PKG_Q8/" \;
+          if [ "${{ runner.os }}" = "macOS" ]; then cp "$PKG_FULL/default.metallib" "$PKG_Q8/"; fi
 
-          # oudep manifest
-          cat > "$PKG/oudep.yaml" <<EOF
+          # Model weights (each package its own) + OpenUtau backend config.
+          cp model/game_medium.gguf "$PKG_FULL/game_medium.gguf"
+          cp model/game_medium_q8.gguf "$PKG_Q8/game_medium.gguf"
+          cp model/config.json "$PKG_FULL/"
+          cp model/config.json "$PKG_Q8/"
+
+          # oudep manifests
+          cat > "$PKG_FULL/oudep.yaml" <<EOF
           id: game-ggml-medium
+          version: 0.1.0
+          description: GAME GGML inference engine (${{ matrix.name }}) + full FP32 medium GGUF weights
+          entrypoints:
+            - loader: Executable
+              path: $BIN
+          EOF
+          cat > "$PKG_Q8/oudep.yaml" <<EOF
+          id: game-ggml-medium-q8
           version: 0.1.0
           description: GAME GGML inference engine (${{ matrix.name }}) + Q8_0 quantized medium GGUF weights
           entrypoints:
@@ -321,20 +336,33 @@ jobs:
           EOF
 
           # OpenUtau expects all of these files at the package root.
-          test -x "$PKG/$BIN"
-          test -s "$PKG/game_medium.gguf"
-          test -s "$PKG/config.json"
-          test -s "$PKG/oudep.yaml"
-          grep -Fx "id: game-ggml-medium" "$PKG/oudep.yaml"
-          grep -Fx "    path: $BIN" "$PKG/oudep.yaml"
-          ls -lh "$PKG/"
-          echo "PKG_DIR=$PKG" >> "$GITHUB_ENV"
+          for pkg in "$PKG_FULL" "$PKG_Q8"; do
+            test -x "$pkg/$BIN"
+            test -s "$pkg/game_medium.gguf"
+            test -s "$pkg/config.json"
+            test -s "$pkg/oudep.yaml"
+          done
+          grep -Fx "id: game-ggml-medium" "$PKG_FULL/oudep.yaml"
+          grep -Fx "id: game-ggml-medium-q8" "$PKG_Q8/oudep.yaml"
+          grep -Fx "    path: $BIN" "$PKG_FULL/oudep.yaml"
+          grep -Fx "    path: $BIN" "$PKG_Q8/oudep.yaml"
+          ls -lh "$PKG_FULL/" "$PKG_Q8/"
+          echo "PKG_FULL=$PKG_FULL" >> "$GITHUB_ENV"
+          echo "PKG_Q8=$PKG_Q8" >> "$GITHUB_ENV"
 
-      - name: Upload build artifact
+      - name: Upload build artifact (full)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PKG_DIR }}
-          path: ${{ env.PKG_DIR }}
+          name: ${{ env.PKG_FULL }}
+          path: ${{ env.PKG_FULL }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build artifact (quantized)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG_Q8 }}
+          path: ${{ env.PKG_Q8 }}
           if-no-files-found: error
           retention-days: 30
 
@@ -366,11 +394,19 @@ jobs:
           done
 
           # PackageManager requires oudep.yaml at the archive root.
+          # Each artifact name is unique (full vs -q8), so it is also the
+          # release asset name and therefore unambiguous.
           for package in *.oudep; do
             test "$(unzip -Z1 "$package" | grep -c '^oudep.yaml$')" -eq 1
             test "$(unzip -Z1 "$package" | grep -c '^game_medium.gguf$')" -eq 1
             test "$(unzip -Z1 "$package" | grep -c '^config.json$')" -eq 1
           done
+          # both the full (F32) and the quantized (Q8_0) variant are produced.
+          full_count=$(ls *.oudep | grep -vc -- '-q8\.oudep$') || true
+          q8_count=$(ls *.oudep | grep -c -- '-q8\.oudep$') || true
+          echo "full variants: $full_count  q8 variants: $q8_count"
+          test "$full_count" -eq 6
+          test "$q8_count" -eq 6
           ls -lh *.oudep
 
       - name: Publish release
