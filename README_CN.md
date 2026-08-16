@@ -9,6 +9,7 @@
 - **端到端 CLI** — WAV 输入，MIDI/TXT/CSV 输出（镜像 Python `extract`）
 - **体积小** — 1.0-medium checkpoint 约 50 MB GGUF，约 50M 参数
 - **启动快** — Metal binary-archive 补丁使 Apple Silicon 首次运行延迟低于 1 秒
+  （补丁随生态解散收编于本仓库 `cmake/patches/ggml-metal-binary-archive.{patch,md}`）
 - **第三方集成** — 干净的 PIMPL C++ API；`add_subdirectory` 后链接 `game_ggml::game_ggml`
 - **逐位对齐** — 注入相同 RNG 时全流水线输出与 PyTorch 参考逐位一致
 

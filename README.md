@@ -12,7 +12,9 @@ Apple Silicon), CUDA, or Vulkan.  Drop-in replacement for
 - **End-to-end CLI** — WAV in, MIDI/TXT/CSV out (mirrors Python `extract`).
 - **Small footprint** — ~50 MB GGUF for the 1.0-medium checkpoint, ~50 M params.
 - **Fast startup** — Metal binary-archive patch keeps first-run latency under a
-  second on Apple Silicon.
+  second on Apple Silicon.  (The patch is kept in-repo at
+  `cmake/patches/ggml-metal-binary-archive.{patch,md}`; see the `.md` for
+  design and re-apply notes.)
 - **Third-party integration** — clean PIMPL C++ API; `add_subdirectory` and link
   `game_ggml::game_ggml`.
 - **Parity-tested** — full pipeline output matches the PyTorch reference bit-for-bit
