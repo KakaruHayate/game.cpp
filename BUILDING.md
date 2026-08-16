@@ -62,12 +62,25 @@ brew install cmake ccache
 # CUDA 12.6 supports Visual Studio 2022 / MSVC 193x.
 ```
 
+> **Windows + CUDA toolchain notes (from local builds):**
+> - nvcc rejects host toolchains newer than it supports.  When a newer Visual
+>   Studio (e.g. VS 2026 / MSVC 19.5x) is installed it is NOT safe to assume it
+>   works with the installed CUDA — use a VS 2019 Build Tools (MSVC 14.29)
+>   and configure with the matching generator, e.g.
+>   `cmake -G "Visual Studio 16 2019" -A x64 -DCMAKE_CUDA_ARCHITECTURES=75 ...`
+> - If several CUDA toolkits are installed, the MSBuild `CUDA <ver>.targets`
+>   integration picks the newest via the `CUDA_PATH_V<major>_<minor>` env var.
+>   Pin the one you intend to use, e.g. set `CUDA_PATH_V13_0` to the v11.6 path
+>   when building with CUDA 11.6, otherwise nvcc 13 + MSVC 14.29 hits
+>   `__cudaLaunch` macro breakage (`error C4002`).
+> - CI reference: `ubuntu-22.04` / `windows-2022` + CUDA 12.6.3.
+
 ## Quick start
 
 ```bash
 # Clone
-git clone https://github.com/KakaruHayate/game_ggml_cli.git
-cd game_ggml_cli
+git clone https://github.com/KakaruHayate/game.cpp.git
+cd game.cpp
 
 # Configure with CPU backend
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
