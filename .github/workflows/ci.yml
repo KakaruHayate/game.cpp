@@ -306,7 +306,7 @@ jobs:
             cp "$METALLIB" "$PKG_FULL/"
           fi
 
-          # Quanized variant: clone binaries/libs/metallib, swap the weights.
+          # Quantized variant: clone binaries/libs/metallib, swap the weights.
           cat "$PKG_FULL/$BIN" > "$PKG_Q8/$BIN"
           find build/bin -maxdepth 1 -name "${{ matrix.lib_glob }}" -exec cp {} "$PKG_Q8/" \;
           if [ "${{ runner.os }}" = "macOS" ]; then cp "$PKG_FULL/default.metallib" "$PKG_Q8/"; fi
@@ -328,7 +328,9 @@ jobs:
           EOF
           cat > "$PKG_Q8/oudep.yaml" <<EOF
           id: game-ggml-medium-q8
-          version: 0.1.0
+          # distinct id, and 0.2.0 records the weight change vs the 0.1.0 F32
+          # build so version-caching hosts detect the update.
+          version: 0.2.0
           description: GAME GGML inference engine (${{ matrix.name }}) + Q8_0 quantized medium GGUF weights
           entrypoints:
             - loader: Executable
