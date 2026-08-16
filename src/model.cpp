@@ -339,8 +339,16 @@ void Model::Impl::run_segmenter_step(
             auto outs = internal::build_segmenter_tail_graph(
                 s.ctx, x_in, positions, segmenter_w, cfg, nf);
 
-            s.finalize(outs.x_run, "segmenter/tail");
+            // Both outputs must be registered BEFORE gallocr allocation —
+            // allocating first then expanding the graph leaves latent nodes
+            // unallocated = UB on compute (and the latent tap is set for the
+            // medium config, so this path is live when DBCache is enabled).
+            ggml_set_output(outs.x_run);
+            ggml_build_forward_expand(s.graph, outs.x_run);
             if (outs.latent) { ggml_set_output(outs.latent); ggml_build_forward_expand(s.graph, outs.latent); }
+            s.dump_backend_support("segmenter/tail");
+            s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+            if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/tail)");
 
             ggml_backend_tensor_set(x_in, x_front.data(), 0, x_front.size() * sizeof(float));
             std::vector<std::int32_t> pos(T);
