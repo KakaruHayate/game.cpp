@@ -39,9 +39,13 @@ struct InferParams {
     std::uint64_t seed = 0;
 
     // DBCache (cache-dit style) for the segmenter across D3PM steps.
-    // When enabled (threshold > 0), the tail block stack is skipped on steps
-    // whose front-block residual delta falls below `db_cache_threshold`.
-    float db_cache_threshold  = 0.0f;   // 0 = disabled; 0.25 recommended
+    // When enabled, the tail block stack is skipped on steps whose
+    // front-block residual delta falls below `db_cache_threshold`.
+    //   -1 = auto: CPU 0.25, GPU backends (vulkan/metal/cuda) 0 (off) — the
+    //        GPU host round-trips of the split path regress quantized
+    //        weights, so default off there
+    //    0 = disabled;  >0 = explicit threshold (0.25 recommended)
+    float db_cache_threshold  = -1.0f;
     int   db_cache_fn_blocks  = 1;      // front (warmup) blocks always executed
     int   db_cache_warmup     = 1;      // full passes before hits are allowed
 };

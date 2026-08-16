@@ -566,8 +566,20 @@ InferResult Model::Impl::infer_with_rng(
     // with a single step there is nothing to cache, so the fused single-graph
     // path stays active (cache.enabled==false) even when a threshold is set
     // — that avoids paying the 3-stage split cost for --nsteps 1.
-    seg_cache.enabled   = params.db_cache_threshold > 0.0f && ts.size() > 1;
-    seg_cache.threshold = params.db_cache_threshold;
+    // EP-aware default: on CPU the split-cache path wins big (measured -45%
+    // at nsteps=8); on GPU backends its per-step host round-trips regress
+    // quantized weights (measured +20% on Vulkan+Q8), so default it off
+    // unless the user picks a threshold explicitly.
+    float thr = params.db_cache_threshold;
+    if (thr < 0.0f) {
+        const char * bn = internal::backend_name(backend);
+        const bool gpu  = bn && (std::strcmp(bn, "vulkan") == 0 ||
+                                 std::strcmp(bn, "cuda") == 0 ||
+                                 std::strcmp(bn, "metal") == 0);
+        thr = gpu ? 0.0f : 0.25f;
+    }
+    seg_cache.enabled   = thr > 0.0f && ts.size() > 1;
+    seg_cache.threshold = thr;
     seg_cache.fn_blocks = params.db_cache_fn_blocks;
     seg_cache.warmup    = params.db_cache_warmup;
     seg_cache.reset();
