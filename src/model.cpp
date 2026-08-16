@@ -692,6 +692,10 @@ InferResult Model::Impl::infer_with_rng(
 
     InferResult result;
     result.num_frames = T;
+    // DBCache hit/miss for this inference (paths before the early return also
+    // carry the counters already reflected above).
+    result.db_cache_hits   = seg_cache.hits;
+    result.db_cache_misses = seg_cache.misses;
     if (N == 0) return result;
 
     // --- 5) estimator

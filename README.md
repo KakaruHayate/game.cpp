@@ -261,6 +261,15 @@ int main() {
     game_ggml::InferParams params;
     params.language = 4;   // from lang_map: { "zh": 4 }
     params.seed     = 42;
+    // DBCache (segmenter cross-step reuse; affects nsteps>1 only).
+    // -1 = auto (CPU 0.25, GPU off); 0 = off; >0 = explicit threshold.
+    params.db_cache_threshold = 0.25f;
+    params.db_cache_fn_blocks = 1;
+    params.db_cache_warmup    = 1;
+    // Optional robustness knobs (defaults match --cache-* CLI flags above):
+    // params.db_cache_window_start = 0.0f; params.db_cache_window_end = 1.0f;
+    // params.db_cache_err_decay = 0.0f;    params.db_cache_max_cont = 0;
+    // params.db_cache_bn_blocks = 0;
 
     auto result = model.infer(waveform.data(), waveform.size(), params);
     for (const auto & n : result.notes) {
@@ -268,6 +277,9 @@ int main() {
         printf("  %.2fs + %.2fs : %.2f\n",
                n.offset_seconds, n.duration_seconds, n.pitch_midi);
     }
+    // Cache hit/miss counters for this inference (0/0 when cache disabled).
+    printf("  dbcache hits=%d misses=%d\n",
+           result.db_cache_hits, result.db_cache_misses);
 }
 ```
 

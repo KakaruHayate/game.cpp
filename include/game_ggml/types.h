@@ -72,6 +72,11 @@ struct InferResult {
 
     // Number of mel frames processed (for diagnostics).
     int num_frames = 0;
+
+    // DBCache hit/miss counters for this inference (segments summed).
+    // With the cache disabled (nsteps==1 or threshold==0) both stay 0.
+    int db_cache_hits   = 0;
+    int db_cache_misses = 0;
 };
 
 }  // namespace game_ggml
