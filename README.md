@@ -180,8 +180,17 @@ Vulkan+Q8); set an explicit threshold to enable it there.
 
 - Tuning: `--cache-threshold <float>`（auto / 0 = off / 0.25...）,
   `--cache-fn-blocks <int>`, `--cache-warmup <int>`.
+- Robustness knobs (borrowed from cache-dit/edge-dit.cpp): a reuse WINDOW
+  (`--cache-window-start/end`, fractions of the loop — first/last steps stay
+  full compute), UCache-style accumulated-error gate
+  (`--cache-error-decay` + `--cache-error-limit`), and a consecutive-hit cap
+  (`--cache-max-continuous`). All default to the per-step-threshold behavior.
 - With `--nsteps 1` the cache is automatically disabled even if a threshold is
   set, keeping the fused single-graph path with zero overhead.
+- `--cache-bn-blocks` (recompute the last N tail blocks on a hit) is
+  implemented but **not recommended**: the extra host round-trip between the
+  middle and back slices reintroduces the fused-vs-split fp drift and regressed
+  note count (33→32 on the test clip); keep 0.
 
 ### Backend × weights guide
 

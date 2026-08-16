@@ -46,8 +46,24 @@ struct InferParams {
     //        weights, so default off there
     //    0 = disabled;  >0 = explicit threshold (0.25 recommended)
     float db_cache_threshold  = -1.0f;
-    int   db_cache_fn_blocks  = 1;      // front (warmup) blocks always executed
+    int   db_cache_fn_blocks  = 1;      // front blocks always executed
     int   db_cache_warmup     = 1;      // full passes before hits are allowed
+    // Robustness knobs (edge-dit.cpp / CacheDiT borrowings), default = current
+    // behavior unless set:
+    //   reuse window: only cache steps whose fraction in [start, end] of the
+    //     loop; first/last steps stay full-compute (safest).
+    float db_cache_window_start = 0.0f;
+    float db_cache_window_end   = 1.0f;
+    //   UCache-style accumulated-error decay (>0 enables): skipped deltas are
+    //     accumulated (scaled by `decay` each step) and a step is computed in
+    //     full once the accumulated error exceeds `db_cache_err_limit`.
+    float db_cache_err_decay   = 0.0f;   // 0 = disabled (pure per-step threshold)
+    float db_cache_err_limit   = 0.5f;   // only used when err_decay > 0
+    //   maximum consecutive cached steps (0 = unlimited).
+    int   db_cache_max_cont    = 0;
+    //   back blocks always executed: on a hit, recompute the last N blocks on
+    //     top of the reconstructed x (more accurate near the output).
+    int   db_cache_bn_blocks   = 0;
 };
 
 // Full-clip inference result.
