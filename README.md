@@ -77,8 +77,8 @@ Options:
 ```bash
 pip install -r ggml_backend/scripts/requirements.txt
 python ggml_backend/scripts/convert_pt_to_gguf.py \
-    --model-dir GAME-pt-1.0-small \
-    -o ggml_backend/assets/game_small.gguf
+    --model-dir GAME-pt-1.0-medium \
+    -o ggml_backend/assets/game_medium.gguf
 ```
 
 The script reads `model.pt` + `config.yaml` + `lang_map.json` from the given
@@ -88,14 +88,14 @@ directory and writes a single GGUF file containing all 671 tensors (FP32) and
 Inspect the result:
 
 ```bash
-./ggml_backend/build/bin/game_ggml_cli inspect ggml_backend/assets/game_small.gguf
+./ggml_backend/build/bin/game_ggml_cli inspect ggml_backend/assets/game_medium.gguf
 ```
 
 ## Run inference
 
 ```bash
 ./ggml_backend/build/bin/game_ggml_cli extract input.wav \
-    -m ggml_backend/assets/game_small.gguf \
+    -m ggml_backend/assets/game_medium.gguf \
     --output-formats mid,txt,csv \
     --output-dir out/ \
     --tempo 120 \
@@ -174,7 +174,7 @@ estimator   ~0.06 s  (~ 6%)   x_est + regions → notes  (4× JEBF + joint attn)
 Segmenter dominates because D3PM loops it `--nsteps` times.  Default `1`
 keeps it cheap; bump to `4` or `8` for higher quality at linear cost.
 
-### DBCache（多步加速，默认开启）
+### DBCache (multi-step acceleration, default on)
 
 For `--nsteps > 1`, a cross-step DBCache is **on by default on CPU**
 (threshold 0.25, front blocks 1, warmup 1): when the segmenter's front-block
@@ -187,7 +187,7 @@ On GPU backends (Vulkan/Metal/CUDA) it defaults **off**, because the
 split-path host round-trips regress quantized-weight graphs (measured +20% on
 Vulkan+Q8); set an explicit threshold to enable it there.
 
-- Tuning: `--cache-threshold <float>`（auto / 0 = off / 0.25...）,
+- Tuning: `--cache-threshold <float>` (auto / 0 = off / 0.25...),
   `--cache-fn-blocks <int>`, `--cache-warmup <int>`.
 - Robustness knobs (borrowed from cache-dit/edge-dit.cpp): a reuse WINDOW
   (`--cache-window-start/end`, fractions of the loop — first/last steps stay
@@ -235,15 +235,15 @@ sf.write('/tmp/28_44100.wav', y, 44100, subtype='PCM_16')"
 
 # 2. Capture PyTorch's D3PM RNG stream (also produces a reference MIDI)
 python3 ggml_backend/scripts/align_demo.py /tmp/28_44100.wav \
-    -m GAME-pt-1.0-small/model.pt \
-    -g ggml_backend/assets/game_small.gguf \
+    -m GAME-pt-1.0-medium/model.pt \
+    -g ggml_backend/assets/game_medium.gguf \
     --cli ggml_backend/build/bin/game_ggml_cli \
     -l zh -o /tmp/align_out
 
 # 3. Run the 3-per-side subprocess-isolated benchmark
 python3 ggml_backend/scripts/benchmark_align.py /tmp/28_44100.wav \
-    -m GAME-pt-1.0-small/model.pt \
-    -g ggml_backend/assets/game_small.gguf \
+    -m GAME-pt-1.0-medium/model.pt \
+    -g ggml_backend/assets/game_medium.gguf \
     --cli ggml_backend/build/bin/game_ggml_cli \
     --rng /tmp/align_out/align_rng.bin \
     -l zh -o /tmp/bench_out --runs 3
@@ -264,7 +264,7 @@ target_link_libraries(my_app PRIVATE game_ggml::game_ggml)
 #include <vector>
 
 int main() {
-    auto model = game_ggml::Model::load("game_small.gguf");
+    auto model = game_ggml::Model::load("game_medium.gguf");
     std::vector<float> waveform = /* ... load 44100 Hz mono ... */;
 
     game_ggml::InferParams params;
@@ -326,9 +326,10 @@ Dumps are gitignored — regenerate them as part of CI.
 
 - **44100 Hz mono WAV only** — other sample rates raise `InvalidWav`.  Resampling
   is deliberately out-of-scope to keep the footprint small.
-- **FP32 weights only** — the converter emits FP32 GGUF.  Quantization is a
-  later deliverable.
-- **Only the shipped `1.0-small` config branch is supported**.  The estimator
+- **FP32 and Q8_0 weights** — the converter emits FP32 GGUF by default, or Q8_0
+  via `--quant-config` (see CI `prepare-model`).  All backends optimise for the
+  quantized layout; results are near-lossless vs FP32.
+- **Only the shipped `1.0-medium` config branch is supported**.  The estimator
   rejects `split` attention, learned pool merger, `region_token_num > 1`, and
   `use_region_bias=true` at load time with a clear `NotImplemented` message.
 - **Batch size 1** per inference call — matches `infer.py extract`.  For

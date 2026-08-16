@@ -69,8 +69,8 @@ cmake --build ggml_backend/build -j
 ```bash
 pip install -r ggml_backend/scripts/requirements.txt
 python ggml_backend/scripts/convert_pt_to_gguf.py \
-    --model-dir GAME-pt-1.0-small \
-    -o ggml_backend/assets/game_small.gguf
+    --model-dir GAME-pt-1.0-medium \
+    -o ggml_backend/assets/game_medium.gguf
 ```
 
 脚本读取指定目录下的 `model.pt` + `config.yaml` + `lang_map.json`，写出单个 GGUF（含全部 671 个 tensor（FP32）与 74 个 metadata KV）。
@@ -78,14 +78,14 @@ python ggml_backend/scripts/convert_pt_to_gguf.py \
 检查结果：
 
 ```bash
-./ggml_backend/build/bin/game_ggml_cli inspect ggml_backend/assets/game_small.gguf
+./ggml_backend/build/bin/game_ggml_cli inspect ggml_backend/assets/game_medium.gguf
 ```
 
 ## 运行推理
 
 ```bash
 ./ggml_backend/build/bin/game_ggml_cli extract input.wav \
-    -m ggml_backend/assets/game_small.gguf \
+    -m ggml_backend/assets/game_medium.gguf \
     --output-formats mid,txt,csv \
     --output-dir out/ \
     --tempo 120 \
@@ -199,15 +199,15 @@ sf.write('/tmp/28_44100.wav', y, 44100, subtype='PCM_16')"
 
 # 2. 捕获 PyTorch 的 D3PM RNG 流（同时产出参考 MIDI）
 python3 ggml_backend/scripts/align_demo.py /tmp/28_44100.wav \
-    -m GAME-pt-1.0-small/model.pt \
-    -g ggml_backend/assets/game_small.gguf \
+    -m GAME-pt-1.0-medium/model.pt \
+    -g ggml_backend/assets/game_medium.gguf \
     --cli ggml_backend/build/bin/game_ggml_cli \
     -l zh -o /tmp/align_out
 
 # 3. 运行 3-per-side 子进程隔离基准
 python3 ggml_backend/scripts/benchmark_align.py /tmp/28_44100.wav \
-    -m GAME-pt-1.0-small/model.pt \
-    -g ggml_backend/assets/game_small.gguf \
+    -m GAME-pt-1.0-medium/model.pt \
+    -g ggml_backend/assets/game_medium.gguf \
     --cli ggml_backend/build/bin/game_ggml_cli \
     --rng /tmp/align_out/align_rng.bin \
     -l zh -o /tmp/bench_out --runs 3
@@ -228,7 +228,7 @@ target_link_libraries(my_app PRIVATE game_ggml::game_ggml)
 #include <vector>
 
 int main() {
-    auto model = game_ggml::Model::load("game_small.gguf");
+    auto model = game_ggml::Model::load("game_medium.gguf");
     std::vector<float> waveform = /* ... 加载 44100 Hz mono ... */;
 
     game_ggml::InferParams params;
@@ -271,8 +271,8 @@ ctest --test-dir ggml_backend/build --output-on-failure
 ## 已知限制（v1）
 
 - **仅 44100 Hz mono WAV** — 其他采样率抛 `InvalidWav`。重采样刻意不在范围内以保持体积小
-- **仅 FP32 权重** — converter 输出 FP32 GGUF；量化是后续交付物
-- **仅支持随附的 `1.0-small` 配置分支** — estimator 加载时对 `split` attention、learned pool merger、`region_token_num > 1`、`use_region_bias=true` 明确抛 `NotImplemented`
+- **FP32 与 Q8_0 权重** — converter 默认输出 FP32 GGUF，`--quant-config` 可输出 Q8_0（见 CI `prepare-model`）；全部后端针对量化布局优化，结果相对 FP32 近无损
+- **仅支持随附的 `1.0-medium` 配置分支** — estimator 加载时对 `split` attention、learned pool merger、`region_token_num > 1`、`use_region_bias=true` 明确抛 `NotImplemented`
 - **单次调用 batch size 1** — 与 `infer.py extract` 一致；并行流请持有多个 `Model` 实例
 - **Metal FP32 精度** — 每次 matmul 约 1e-3；边界解码时相对 CPU 参考每几百帧可能翻转一帧
 
@@ -292,3 +292,4 @@ ctest --test-dir ggml_backend/build --output-on-failure
 ## 许可
 
 MIT —— 与上游 [GAME 项目](https://github.com/openvpi/GAME) 相同。再分发时也应附带上表列出的上游许可声明。
+
