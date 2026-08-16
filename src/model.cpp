@@ -324,56 +324,85 @@ void Model::Impl::run_segmenter_step(
 
     // ---------- Decide cache hit ----------
     bool use_cache = false;
+    const int N_seg = cfg.segmenter.num_layers;
     if (cache.enabled && cache.valid &&
         cache.step >= cache.warmup &&
         cache.prev_front.size() == x_front.size()) {
-        if (front_delta(x_front.data(), cache.prev_front.data(), D * T) < cache.threshold) {
-            use_cache = true;
+        const float fd = front_delta(x_front.data(), cache.prev_front.data(), D * T);
+
+        // Reuse window: cache only mid-schedule steps (first/last computed
+        // fully unless the window covers them).
+        bool in_window = true;
+        if (cache.total_steps > 1) {
+            const float frac = static_cast<float>(cache.step + 1) / static_cast<float>(cache.total_steps);
+            in_window = frac >= cache.window_start && frac <= cache.window_end;
         }
+
+        // UCache-style accumulated error gate (opt-in via err_decay > 0).
+        bool err_ok = true;
+        if (cache.err_decay > 0.0f) {
+            cache.acc_err = (cache.acc_err + fd) * cache.err_decay;
+            err_ok = cache.acc_err <= cache.err_limit;
+        }
+
+        // Consecutive-hit guard.
+        const bool cont_ok = (cache.max_cont == 0) || (cache.cont_cnt < cache.max_cont);
+
+        use_cache = (fd < cache.threshold) && in_window && err_ok && cont_ok;
     }
 
-    // ---------- Stage B: tail blocks (skipped on hit) ----------
+    // ---------- Stage B: tail blocks (middle reused on hit, back always done) ----------
+    const int nb = std::min(std::max(cache.bn_blocks, 0), N_seg - nf);
+    const int middle_end = N_seg - nb;             // middle = [nf, middle_end)
+    std::vector<float> x_mid(D * T);
     std::vector<float> x_out(D * T);
+
+    auto run_tail_range = [&](const float * in_host, int start, int end,
+                              std::vector<float> & out_host) {
+        StageCtx s(backend, 512 * 1024 * 1024, 16384);
+        ggml_tensor * x_in       = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
+        ggml_tensor * positions  = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+        for (auto * t : {x_in, positions}) ggml_set_input(t);
+
+        auto outs = internal::build_segmenter_tail_graph(
+            s.ctx, x_in, positions, segmenter_w, cfg, start, end);
+
+        // Both outputs must be registered BEFORE gallocr allocation — expanding
+        // after alloc leaves latent unallocated = UB on compute.
+        ggml_set_output(outs.x_run);
+        ggml_build_forward_expand(s.graph, outs.x_run);
+        if (outs.latent) { ggml_set_output(outs.latent); ggml_build_forward_expand(s.graph, outs.latent); }
+        s.dump_backend_support("segmenter/tail");
+        s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/tail)");
+
+        ggml_backend_tensor_set(x_in, in_host, 0, x_front.size() * sizeof(float));
+        std::vector<std::int32_t> pos(T);
+        for (int i = 0; i < T; ++i) pos[i] = i;
+        ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
+
+        s.compute();
+        ggml_backend_tensor_get(outs.x_run, out_host.data(), 0, out_host.size() * sizeof(float));
+    };
+
     if (use_cache) {
-        for (int i = 0; i < D * T; ++i) x_out[i] = x_front[i] + cache.tail_delta[i];
+        // Reconstruct the middle from the cached delta, then always run the
+        // back slice (if any) so the output-end blocks see accurate input.
+        for (int i = 0; i < D * T; ++i) x_mid[i] = x_front[i] + cache.tail_delta[i];
+        if (nb > 0) run_tail_range(x_mid.data(), middle_end, N_seg, x_out);
+        else        for (int i = 0; i < D * T; ++i) x_out[i] = x_mid[i];
         ++cache.hits;
+        ++cache.cont_cnt;
     } else {
-        std::vector<float> x_run(D * T);
-        {
-            StageCtx s(backend, 512 * 1024 * 1024, 16384);
-
-            ggml_tensor * x_in       = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
-            ggml_tensor * positions  = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
-            for (auto * t : {x_in, positions}) ggml_set_input(t);
-
-            auto outs = internal::build_segmenter_tail_graph(
-                s.ctx, x_in, positions, segmenter_w, cfg, nf);
-
-            // Both outputs must be registered BEFORE gallocr allocation —
-            // allocating first then expanding the graph leaves latent nodes
-            // unallocated = UB on compute (and the latent tap is set for the
-            // medium config, so this path is live when DBCache is enabled).
-            ggml_set_output(outs.x_run);
-            ggml_build_forward_expand(s.graph, outs.x_run);
-            if (outs.latent) { ggml_set_output(outs.latent); ggml_build_forward_expand(s.graph, outs.latent); }
-            s.dump_backend_support("segmenter/tail");
-            s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-            if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/tail)");
-
-            ggml_backend_tensor_set(x_in, x_front.data(), 0, x_front.size() * sizeof(float));
-            std::vector<std::int32_t> pos(T);
-            for (int i = 0; i < T; ++i) pos[i] = i;
-            ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
-
-            s.compute();
-            ggml_backend_tensor_get(outs.x_run, x_run.data(), 0, x_run.size() * sizeof(float));
-        }
-
-        for (int i = 0; i < D * T; ++i) x_out[i] = x_run[i];
+        run_tail_range(x_front.data(), nf, middle_end, x_mid);
+        if (nb > 0) run_tail_range(x_mid.data(), middle_end, N_seg, x_out);
+        else        for (int i = 0; i < D * T; ++i) x_out[i] = x_mid[i];
         cache.tail_delta.resize(D * T);
-        for (int i = 0; i < D * T; ++i) cache.tail_delta[i] = x_run[i] - x_front[i];
+        for (int i = 0; i < D * T; ++i) cache.tail_delta[i] = x_mid[i] - x_front[i];
         cache.prev_front = x_front;
         cache.valid = true;
+        cache.acc_err = 0.0f;
+        cache.cont_cnt = 0;
         ++cache.misses;
     }
 
@@ -599,9 +628,20 @@ InferResult Model::Impl::infer_with_rng(
     seg_cache.fn_blocks = params.db_cache_fn_blocks;
     seg_cache.warmup    = params.db_cache_warmup;
     seg_cache.reset();
+    seg_cache.total_steps = static_cast<int>(ts.size());
+    seg_cache.window_start = params.db_cache_window_start;
+    seg_cache.window_end   = params.db_cache_window_end;
+    seg_cache.err_decay    = params.db_cache_err_decay;
+    seg_cache.err_limit    = params.db_cache_err_limit;
+    seg_cache.max_cont     = params.db_cache_max_cont;
+    seg_cache.bn_blocks    = params.db_cache_bn_blocks;
     if (seg_cache.enabled) {
-        std::fprintf(stderr, "DBCache: threshold=%.3f fn_blocks=%d warmup=%d\n",
-            seg_cache.threshold, seg_cache.fn_blocks, seg_cache.warmup);
+        std::fprintf(stderr,
+            "DBCache: threshold=%.3f fn_blocks=%d warmup=%d win=[%.2f,%.2f] "
+            "decay=%.2f max_cont=%d bn=%d\n",
+            seg_cache.threshold, seg_cache.fn_blocks, seg_cache.warmup,
+            seg_cache.window_start, seg_cache.window_end,
+            seg_cache.err_decay, seg_cache.max_cont, seg_cache.bn_blocks);
     }
 
     std::vector<std::uint8_t> known(T, 0);
@@ -652,6 +692,10 @@ InferResult Model::Impl::infer_with_rng(
 
     InferResult result;
     result.num_frames = T;
+    // DBCache hit/miss for this inference (paths before the early return also
+    // carry the counters already reflected above).
+    result.db_cache_hits   = seg_cache.hits;
+    result.db_cache_misses = seg_cache.misses;
     if (N == 0) return result;
 
     // --- 5) estimator

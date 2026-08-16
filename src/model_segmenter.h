@@ -84,7 +84,9 @@ SegmenterTailOutputs build_segmenter_tail_graph(
     ggml_tensor * positions,
     const SegmenterWeights & W,
     const GameModelConfig & cfg,
-    int fn_blocks);
+    int fn_blocks,
+    int end_blocks = -1);  // exclusive end (default: num_layers); enables a
+                           // "back" slice for DBCache bn-blocks
 
 // head: output_norm + output_proj -> logits (T,)
 ggml_tensor * build_segmenter_head_graph(

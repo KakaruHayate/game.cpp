@@ -32,9 +32,20 @@ struct SegmenterCacheState {
     int   fn_blocks = 1;
     int   warmup    = 1;
 
+    // Robustness knobs (edge-dit.cpp / CacheDiT borrowings).
+    int   total_steps      = 0;      // D3PM loop length (for the reuse window)
+    float window_start     = 0.0f;   // cache only when step/total in [..,]
+    float window_end       = 1.0f;
+    float err_decay        = 0.0f;   // >0: UCache-style accumulated-error gate
+    float err_limit        = 0.5f;
+    int   max_cont         = 0;      // 0 = unlimited consecutive hits
+    int   bn_blocks        = 0;      // always recompute this many tail blocks on hit
+
     int   step  = 0;
     int   hits  = 0;
     int   misses = 0;
+    float acc_err  = 0.0f;           // accumulated skipped delta error
+    int   cont_cnt = 0;              // consecutive hits
 
     std::vector<float> prev_front;   // x_front of the previous step
     std::vector<float> tail_delta;   // x_out - x_front of the previous full pass
@@ -44,6 +55,8 @@ struct SegmenterCacheState {
         step = 0;
         hits = 0;
         misses = 0;
+        acc_err = 0.0f;
+        cont_cnt = 0;
         prev_front.clear();
         tail_delta.clear();
         valid = false;

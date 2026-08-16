@@ -104,6 +104,12 @@ void print_usage(const char * argv0) {
         "  --cache-threshold <float>              DBCache normalized-L1 threshold           (default: auto: CPU 0.25, GPU off)\n"
         "  --cache-fn-blocks <int>                DBCache front blocks per step              (default: 1)\n"
         "  --cache-warmup <int>                   D3PM steps before caching starts           (default: 1)\n"
+        "  --cache-window-start <float>           only cache from this step fraction on      (default: 0)\n"
+        "  --cache-window-end <float>             only cache up to this step fraction        (default: 1)\n"
+        "  --cache-error-decay <float>            accumulate skipped-error decay (>0 enables) (default: 0 = off)\n"
+        "  --cache-error-limit <float>            forced recompute when acc. error exceeds    (default: 0.5)\n"
+        "  --cache-max-continuous <int>           cap consecutive cached steps (0=unlimited)  (default: 0)\n"
+        "  --cache-bn-blocks <int>                always recompute last N tail blocks on hit  (default: 0)\n"
         "  --rng-replay <path>                    Feed float32 uniform samples from file    (parity vs PyTorch)\n",
         argv0);
 }
@@ -386,6 +392,12 @@ int cmd_extract(int argc, char ** argv) {
     float db_cache_threshold = -1.0f;    // auto: CPU 0.25, GPU 0 (EP-aware)
     int   db_cache_fn_blocks = 1;
     int   db_cache_warmup    = 1;
+    float db_cache_window_start = 0.0f;
+    float db_cache_window_end   = 1.0f;
+    float db_cache_err_decay    = 0.0f;
+    float db_cache_err_limit    = 0.5f;
+    int   db_cache_max_cont     = 0;
+    int   db_cache_bn_blocks    = 0;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -411,6 +423,12 @@ int cmd_extract(int argc, char ** argv) {
         else if (a == "--cache-threshold")             db_cache_threshold = std::stof(next(a));
         else if (a == "--cache-fn-blocks")             db_cache_fn_blocks = std::atoi(next(a).c_str());
         else if (a == "--cache-warmup")                db_cache_warmup    = std::atoi(next(a).c_str());
+        else if (a == "--cache-window-start")          db_cache_window_start = std::stof(next(a));
+        else if (a == "--cache-window-end")            db_cache_window_end   = std::stof(next(a));
+        else if (a == "--cache-error-decay")           db_cache_err_decay    = std::stof(next(a));
+        else if (a == "--cache-error-limit")           db_cache_err_limit    = std::stof(next(a));
+        else if (a == "--cache-max-continuous")        db_cache_max_cont     = std::atoi(next(a).c_str());
+        else if (a == "--cache-bn-blocks")             db_cache_bn_blocks    = std::atoi(next(a).c_str());
         else {
             std::fprintf(stderr, "unknown option: %s\n", a.c_str());
             return 1;
@@ -449,6 +467,12 @@ int cmd_extract(int argc, char ** argv) {
     p.db_cache_threshold  = db_cache_threshold;
     p.db_cache_fn_blocks  = db_cache_fn_blocks;
     p.db_cache_warmup     = db_cache_warmup;
+    p.db_cache_window_start = db_cache_window_start;
+    p.db_cache_window_end   = db_cache_window_end;
+    p.db_cache_err_decay    = db_cache_err_decay;
+    p.db_cache_err_limit    = db_cache_err_limit;
+    p.db_cache_max_cont     = db_cache_max_cont;
+    p.db_cache_bn_blocks    = db_cache_bn_blocks;
 
     std::vector<Note> all_notes;
 

@@ -153,19 +153,18 @@ SegmenterTailOutputs build_segmenter_tail_graph(
     ggml_tensor * positions,
     const SegmenterWeights & W,
     const GameModelConfig & cfg,
-    int fn_blocks)
+    int fn_blocks,
+    int end_blocks)
 {
+    if (end_blocks <= 0 || end_blocks > cfg.segmenter.num_layers) {
+        end_blocks = cfg.segmenter.num_layers;
+    }
     ggml_tensor * x = x_front;
     ggml_tensor * latent_tap = nullptr;
-    if (cfg.segmenter.return_latent &&
-        cfg.segmenter.latent_layer_idx <= fn_blocks) {
-        // latent_layer_idx is 1-based and must reside strictly after the cached
-        // front blocks; otherwise the tap could never be reached in the tail.
-        // Reject loudly instead of silently exposing a null latent to callers.
-        throw Error("segmenter: latent_layer_idx must be > fn_blocks "
-                    "when return_latent is enabled");
-    }
-    for (int i = fn_blocks; i < cfg.segmenter.num_layers; ++i) {
+    // NB: no latent-tap guard here — sub-slices (DBCache middle/back ranges)
+    // legitimately omit the tap, and the CLI path never consumes latent.
+    // The fused build_segmenter_graph checks the contract instead.
+    for (int i = fn_blocks; i < end_blocks; ++i) {
         x = ops::ebf_block(ctx, x, W.layers[i], positions,
                            cfg.segmenter.num_heads, cfg.segmenter.head_dim);
         if (cfg.segmenter.return_latent && i == cfg.segmenter.latent_layer_idx - 1) {
@@ -213,6 +212,12 @@ SegmenterOutputs build_segmenter_graph(
     SegmenterOutputs out{};
     SegmenterTailOutputs tail = build_segmenter_tail_graph(
         ctx, x_front, positions, W, cfg, /*fn_blocks=*/0);
+    if (cfg.segmenter.return_latent && !tail.latent) {
+        // latent_layer_idx is 1-based; must be a valid block index in the
+        // fused full-stack pass.  Reject loudly instead of exposing null.
+        throw Error("segmenter: return_latent enabled but latent_layer_idx "
+                    "is outside [1, num_layers]");
+    }
     out.latent = tail.latent;
     out.logits = build_segmenter_head_graph(ctx, tail.x_run, W, cfg);
     return out;
