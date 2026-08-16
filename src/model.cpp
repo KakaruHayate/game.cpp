@@ -67,11 +67,11 @@ std::unique_ptr<Model::Impl> Model::Impl::load(const std::string & path) {
     impl->backend = internal::init_best_backend();
 
     // Depthwise convs: CPU uses the dedicated per-channel GGML_OP_CONV_2D_DW
-    // kernel (no im2col); Vulkan/Metal fall back to ggml_conv_1d_dw.
+    // kernel (no im2col); every GPU backend (Vulkan/Metal/CUDA) falls back to
+    // ggml_conv_1d_dw (im2col + F16 kernel).
     const char * bname = internal::backend_name(impl->backend);
-    const bool is_vk_or_metal = (std::strcmp(bname, "vulkan") == 0) ||
-                                (std::strcmp(bname, "metal") == 0);
-    internal::ops::set_direct_dwconv(!is_vk_or_metal);
+    const bool is_cpu = (std::strcmp(bname, "cpu") == 0);
+    internal::ops::set_direct_dwconv(is_cpu);
 
     impl->weights = std::make_unique<internal::LoadedWeights>(
         internal::LoadedWeights::load_all(*impl->gguf, impl->backend));
@@ -146,10 +146,10 @@ struct StageCtx {
         }
     }
 
-    void finalize(ggml_tensor * out) {
+    void finalize(ggml_tensor * out, const char * stage = "stage") {
         ggml_set_output(out);
         ggml_build_forward_expand(graph, out);
-        dump_backend_support("stage");
+        dump_backend_support(stage);
         alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
         if (!ggml_gallocr_alloc_graph(alloc, graph)) {
             throw Error("ggml_gallocr_alloc_graph failed");
@@ -239,6 +239,47 @@ void Model::Impl::run_segmenter_step(
 {
     const int D = cfg.embedding_dim;
     SegmenterCacheState & cache = seg_cache;
+
+    // ---------- Fused fast path (DBCache disabled, the default) ----------
+    // One combined graph + a single backend submit is cheaper than the
+    // 3-stage host-copy split below: fewer gallocr allocations, no extra
+    // host round-trips, and it matches the pre-DBCache behavior exactly.
+    if (!cache.enabled) {
+        StageCtx s(backend, 512 * 1024 * 1024, 16384);
+
+        ggml_tensor * xseg        = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, 1);
+        ggml_tensor * noise       = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+        ggml_tensor * t_tensor    = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, 1, 1, 1);
+        ggml_tensor * lang_tensor = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, 1);
+        ggml_tensor * positions   = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+        for (auto * t : {xseg, noise, t_tensor, lang_tensor, positions}) ggml_set_input(t);
+
+        auto outs = internal::build_segmenter_graph(
+            s.ctx, xseg, noise, t_tensor, lang_tensor, positions, segmenter_w, cfg);
+
+        ggml_set_output(outs.logits);
+        ggml_build_forward_expand(s.graph, outs.logits);
+        if (outs.latent) { ggml_set_output(outs.latent); ggml_build_forward_expand(s.graph, outs.latent); }
+        s.dump_backend_support("segmenter");
+        s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/fused)");
+
+        ggml_backend_tensor_set(xseg,        x_seg_host, 0, ggml_nbytes(xseg));
+        ggml_backend_tensor_set(noise,       noise_mod3, 0, T * sizeof(std::int32_t));
+        ggml_backend_tensor_set(t_tensor,    &t_scalar,  0, sizeof(float));
+        const std::int32_t l = static_cast<std::int32_t>(language);
+        ggml_backend_tensor_set(lang_tensor, &l, 0, sizeof(std::int32_t));
+        std::vector<std::int32_t> pos(T);
+        for (int i = 0; i < T; ++i) pos[i] = i;
+        ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
+
+        s.compute();
+
+        logits_out.resize(T);
+        ggml_backend_tensor_get(outs.logits, logits_out.data(), 0, logits_out.size() * sizeof(float));
+        return;
+    }
+
     const int nf = std::min(std::max(cache.fn_blocks, 0), cfg.segmenter.num_layers);
 
     // ---------- Stage A: front blocks (always executed) ----------
@@ -256,10 +297,7 @@ void Model::Impl::run_segmenter_step(
         ggml_tensor * out_front = internal::build_segmenter_front_graph(
             s.ctx, xseg, noise, t_tensor, lang_tensor, positions, segmenter_w, cfg, nf);
 
-        ggml_set_output(out_front);
-        ggml_build_forward_expand(s.graph, out_front);
-        s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/front)");
+        s.finalize(out_front, "segmenter/front");
 
         ggml_backend_tensor_set(xseg,        x_seg_host, 0, ggml_nbytes(xseg));
         ggml_backend_tensor_set(noise,       noise_mod3, 0, T * sizeof(std::int32_t));
@@ -301,12 +339,8 @@ void Model::Impl::run_segmenter_step(
             auto outs = internal::build_segmenter_tail_graph(
                 s.ctx, x_in, positions, segmenter_w, cfg, nf);
 
-            ggml_set_output(outs.x_run);
-            if (outs.latent) ggml_set_output(outs.latent);
-            ggml_build_forward_expand(s.graph, outs.x_run);
-            if (outs.latent) ggml_build_forward_expand(s.graph, outs.latent);
-            s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-            if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/tail)");
+            s.finalize(outs.x_run, "segmenter/tail");
+            if (outs.latent) { ggml_set_output(outs.latent); ggml_build_forward_expand(s.graph, outs.latent); }
 
             ggml_backend_tensor_set(x_in, x_front.data(), 0, x_front.size() * sizeof(float));
             std::vector<std::int32_t> pos(T);
@@ -334,10 +368,7 @@ void Model::Impl::run_segmenter_step(
 
         ggml_tensor * logits = internal::build_segmenter_head_graph(s.ctx, x_in, segmenter_w, cfg);
 
-        ggml_set_output(logits);
-        ggml_build_forward_expand(s.graph, logits);
-        s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/head)");
+        s.finalize(logits, "segmenter/head");
 
         ggml_backend_tensor_set(x_in, x_out.data(), 0, x_out.size() * sizeof(float));
         s.compute();

@@ -51,7 +51,12 @@ ggml_tensor * embedding(ggml_context * ctx,
 // ---------------------------------------------------------------------------
 
 namespace {
-bool g_direct_dwconv = true;   // CPU-only build default; set at model load
+// Per-thread backend capability: set only by the CPU backend (the dedicated
+// GGML_OP_CONV_2D_DW kernel exists there; GPU backends use im2col).  Stored
+// thread-locally so graph building on one thread is never affected by a model
+// load on another thread.  Assumes a single active model per thread, which is
+// the norm for this CLI; cross-model coexistence should use separate threads.
+thread_local bool g_direct_dwconv = false;
 }
 
 void set_direct_dwconv(bool enable) { g_direct_dwconv = enable; }
@@ -64,9 +69,20 @@ ggml_tensor * dwconv_1d(ggml_context * ctx,
                         int pad) {
     // Runtime override for debugging / A-B comparison:
     //   GAME_GGML_DWCONV=legacy  forces the im2col path on any backend.
+    //   GAME_GGML_DWCONV=direct requests the dedicated kernel, but only if
+    //   the backend actually supports it (g_direct_dwconv was set by the
+    //   backend capability check at model load) — this env value never
+    //   enables a path the backend cannot run.  Unknown values are ignored.
     bool direct = g_direct_dwconv;
     if (const char * env = std::getenv("GAME_GGML_DWCONV"); env && *env) {
-        direct = (std::strncmp(env, "legacy", 6) != 0);
+        if (std::strcmp(env, "legacy") == 0) {
+            direct = false;   // exact "legacy" forces im2col everywhere
+        } else if (std::strcmp(env, "direct") != 0) {
+            std::fprintf(stderr,
+                "[DWCONV] ignoring unknown GAME_GGML_DWCONV value '%s' "
+                "(expected 'direct' | 'legacy')\n", env);
+        }
+        // "direct" is a no-op: capability already encoded in g_direct_dwconv.
     }
 
     if (direct) {

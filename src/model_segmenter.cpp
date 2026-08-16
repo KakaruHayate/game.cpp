@@ -159,6 +159,14 @@ SegmenterTailOutputs build_segmenter_tail_graph(
 {
     ggml_tensor * x = x_front;
     ggml_tensor * latent_tap = nullptr;
+    if (cfg.segmenter.return_latent &&
+        cfg.segmenter.latent_layer_idx <= fn_blocks) {
+        // latent_layer_idx is 1-based and must reside strictly after the cached
+        // front blocks; otherwise the tap could never be reached in the tail.
+        // Reject loudly instead of silently exposing a null latent to callers.
+        throw Error("segmenter: latent_layer_idx must be > fn_blocks "
+                    "when return_latent is enabled");
+    }
     for (int i = fn_blocks; i < cfg.segmenter.num_layers; ++i) {
         x = ops::ebf_block(ctx, x, W.layers[i], positions,
                            cfg.segmenter.num_heads, cfg.segmenter.head_dim);

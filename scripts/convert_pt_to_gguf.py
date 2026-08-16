@@ -394,11 +394,13 @@ def _add_metadata(writer: gguf.GGUFWriter, cfg: dict, lang_map: dict[str, int] |
 # Quantization
 # =============================================================================
 
-# GGML quantized storage requires ne0 % 32 == 0 (block size).  The depthwise
-# conv kernels (k=31 / 5 / 7) violate this, so they can only be stored as
-# F16/F32.  ggml v0.11's conv_1d_dw additionally requires an F16 kernel, so
-# we force F16 for every depthwise conv weight.
-_QUANT_BLOCK = 32
+# GGML quantized storage requires the row width (ne0) to be a multiple of the
+# type's block size.  The depthwise conv kernels (k=31 / 5 / 7) violate this,
+# so they can only be stored as F16/F32.  ggml v0.11's conv_1d_dw additionally
+# requires an F16 kernel, so we force F16 for every depthwise conv weight.
+# Per-type block size (elements per block):
+#   Q4_0/Q8_0 -> 32   (ggml-quants-legacy)
+#   Q4_K/Q5_K/Q6_K -> 256  (K-superblocks)
 _DW_WEIGHT_PATTERNS = (
     "*.attn.c.dw.weight",
     "*.attn.c_x.dw.weight",
@@ -423,6 +425,17 @@ _QUANT_TYPES = {
     "Q4_K": gguf.GGMLQuantizationType.Q4_K,
     "Q5_K": gguf.GGMLQuantizationType.Q5_K,
     "Q6_K": gguf.GGMLQuantizationType.Q6_K,
+}
+
+# Per-type block size in elements.  Q4_0/Q8_0 use 32; the K-superblocks use
+# 256.  A row whose ne0 is not a multiple of its block size cannot be stored
+# quantized and must fall back to F16.
+_BLOCK_SIZES = {
+    gguf.GGMLQuantizationType.Q4_0: 32,
+    gguf.GGMLQuantizationType.Q8_0: 32,
+    gguf.GGMLQuantizationType.Q4_K: 256,
+    gguf.GGMLQuantizationType.Q5_K: 256,
+    gguf.GGMLQuantizationType.Q6_K: 256,
 }
 
 
@@ -466,9 +479,9 @@ def resolve_tensor_type(name: str, arr: np.ndarray, rules: list[QuantRule]) -> g
     """Pick the GGUF storage type for one tensor given the rule list.
 
     Hard constraints (GGML compatibility) always win:
-      1. depthwise conv weights -> F16 (im2col_f16 requires it; k % 32 != 0)
+      1. depthwise conv weights -> F16 (im2col_f16 requires it; k % block != 0)
       2. norms / lay-scales / biases -> F32 (elementwise ops, see _role_f32_only)
-      3. any tensor whose ne0 % 32 != 0 -> F16  (quant storage impossible)
+      3. any tensor whose ne0 % block(qtype) != 0 -> F16  (quant storage impossible)
       4. otherwise the last matching rule decides (default F32).
     """
     if any(fnmatch.fnmatch(name, p) for p in _DW_WEIGHT_PATTERNS):
@@ -484,10 +497,11 @@ def resolve_tensor_type(name: str, arr: np.ndarray, rules: list[QuantRule]) -> g
             qtype = r.qtype
 
     if qtype not in (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16):
-        # quantized block types need ne0 % 32 == 0
-        if arr.shape[-1] % _QUANT_BLOCK != 0:
+        # Q4_0/Q8_0 need 32-element blocks; Q4_K/Q5_K/Q6_K need 256.
+        block = _BLOCK_SIZES[qtype]
+        if arr.shape[-1] % block != 0:
             log.warning("  %s: ne0=%d %% %d != 0, falling back to F16",
-                        name, arr.shape[-1], _QUANT_BLOCK)
+                        name, arr.shape[-1], block)
             return gguf.GGMLQuantizationType.F16
     return qtype
 

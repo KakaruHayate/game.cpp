@@ -18,8 +18,10 @@
 #include <ggml-cpu.h>
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <thread>
 
@@ -116,12 +118,22 @@ ggml_backend_t init_backend(Backend which) {
             if (b) {
                 // Default: use all hardware threads so CPU inference is not
                 // accidentally single-threaded.  Override with
-                // GAME_GGML_THREADS=<n>.
+                // GAME_GGML_THREADS=<n> (1..INT_MAX, full string must parse).
                 unsigned n = std::thread::hardware_concurrency();
                 if (n == 0) n = 1;
                 if (const char * env = std::getenv("GAME_GGML_THREADS"); env && *env) {
-                    const int v = std::atoi(env);
-                    if (v > 0) n = static_cast<unsigned>(v);
+                    char * end = nullptr;
+                    errno = 0;
+                    const long v = std::strtol(env, &end, 10);
+                    if (v >= 1 && v <= std::numeric_limits<int>::max() &&
+                        end && *end == '\0') {
+                        n = static_cast<unsigned>(v);
+                    } else {
+                        std::fprintf(stderr,
+                            "warning: ignoring invalid GAME_GGML_THREADS '%s' "
+                            "(expected 1..%d)\n", env,
+                            std::numeric_limits<int>::max());
+                    }
                 }
                 ggml_backend_cpu_set_n_threads(b, static_cast<int>(n));
             }

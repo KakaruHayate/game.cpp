@@ -102,7 +102,8 @@ void print_usage(const char * argv0) {
         "  --pitch-format name|number             Text output pitch format                 (default: name)\n"
         "  --round-pitch                          Round pitch to integer in text output    (default: false)\n"
         "  --cache-threshold <float>              DBCache normalized-L1 threshold           (default: 0 = off)\n"
-        "  --cache-fn-blocks <int>                DBCache front (warmup) blocks             (default: 1)\n"
+        "  --cache-fn-blocks <int>                DBCache front blocks per step              (default: 1)\n"
+        "  --cache-warmup <int>                   D3PM steps before caching starts           (default: 1)\n"
         "  --rng-replay <path>                    Feed float32 uniform samples from file    (parity vs PyTorch)\n",
         argv0);
 }
@@ -384,6 +385,7 @@ int cmd_extract(int argc, char ** argv) {
     std::string rng_replay_path;
     float db_cache_threshold = 0.0f;
     int   db_cache_fn_blocks = 1;
+    int   db_cache_warmup    = 1;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -408,6 +410,7 @@ int cmd_extract(int argc, char ** argv) {
         else if (a == "--rng-replay")                  rng_replay_path = next(a);
         else if (a == "--cache-threshold")             db_cache_threshold = std::stof(next(a));
         else if (a == "--cache-fn-blocks")             db_cache_fn_blocks = std::atoi(next(a).c_str());
+        else if (a == "--cache-warmup")                db_cache_warmup    = std::atoi(next(a).c_str());
         else {
             std::fprintf(stderr, "unknown option: %s\n", a.c_str());
             return 1;
@@ -445,6 +448,7 @@ int cmd_extract(int argc, char ** argv) {
     p.seed                = seed;
     p.db_cache_threshold  = db_cache_threshold;
     p.db_cache_fn_blocks  = db_cache_fn_blocks;
+    p.db_cache_warmup     = db_cache_warmup;
 
     std::vector<Note> all_notes;
 
