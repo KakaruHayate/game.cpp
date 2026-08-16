@@ -307,7 +307,9 @@ jobs:
           fi
 
           # Quantized variant: clone binaries/libs/metallib, swap the weights.
-          cat "$PKG_FULL/$BIN" > "$PKG_Q8/$BIN"
+          # `cp` (not `cat >`) keeps the executable bit; `cat` would produce a
+          # mode-0644 file and `test -x` would fail on Linux/macOS runners.
+          cp "$PKG_FULL/$BIN" "$PKG_Q8/$BIN"
           find build/bin -maxdepth 1 -name "${{ matrix.lib_glob }}" -exec cp {} "$PKG_Q8/" \;
           if [ "${{ runner.os }}" = "macOS" ]; then cp "$PKG_FULL/default.metallib" "$PKG_Q8/"; fi
 
@@ -338,8 +340,9 @@ jobs:
           EOF
 
           # OpenUtau expects all of these files at the package root.
+          echo "== verifying $PKG_FULL and $PKG_Q8 =="
           for pkg in "$PKG_FULL" "$PKG_Q8"; do
-            test -x "$pkg/$BIN"
+            test -x "$pkg/$BIN" || { echo "NOT EXECUTABLE: $pkg/$BIN"; ls -l "$pkg"; exit 1; }
             test -s "$pkg/game_medium.gguf"
             test -s "$pkg/config.json"
             test -s "$pkg/oudep.yaml"
