@@ -14,16 +14,16 @@ namespace game_ggml::internal::ops {
 // --------------------------------------------------------------------------
 // AttentionWithRoPE (modules.backbones.ebf_with_joint_attention.AttentionWithRoPE)
 //
-//   q      = q_linear(x)                  # [B, T, H*D]
-//   k, v   = kv_linear(x).chunk(2, -1)    # each  [B, T, H*D]
+//   q, k, v = qkv_linear(x).chunk(3, -1)   # each  [B, T, H*D]
 //   → reshape to (B, H, T, D) → RoPE → scaled dot-product attention → merge
 //   out    = out_linear(out)              # [B, T, D_embed]
+// q_linear/kv_linear are fused by the converter into a single qkv tensor
+// (llama-style); the weights are stored row-aligned so quantization is
+// bit-identical to the un-fused form.
 // --------------------------------------------------------------------------
 struct AttentionWeights {
-    ggml_tensor * w_q     = nullptr;
-    ggml_tensor * b_q     = nullptr;
-    ggml_tensor * w_kv    = nullptr;
-    ggml_tensor * b_kv    = nullptr;
+    ggml_tensor * w_qkv   = nullptr;
+    ggml_tensor * b_qkv   = nullptr;
     ggml_tensor * w_out   = nullptr;
     ggml_tensor * b_out   = nullptr;
 };

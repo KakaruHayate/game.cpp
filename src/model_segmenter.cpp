@@ -46,10 +46,8 @@ static ops::EBFBlockWeights bind_seg_layer(
     auto & P = B.pac_w;
     P.w_a_norm = W.get(p + "attn.a_norm.weight");
     P.w_c_norm = W.get(p + "attn.c_norm.weight");
-    P.attn.w_q   = W.get(p + "attn.attn.q_linear.weight");
-    P.attn.b_q   = W.get(p + "attn.attn.q_linear.bias");
-    P.attn.w_kv  = W.get(p + "attn.attn.kv_linear.weight");
-    P.attn.b_kv  = W.get(p + "attn.attn.kv_linear.bias");
+    P.attn.w_qkv = W.get(p + "attn.attn.qkv.weight");
+    P.attn.b_qkv = W.get(p + "attn.attn.qkv.bias");
     P.attn.w_out = W.get(p + "attn.attn.out_linear.weight");
     P.attn.b_out = W.get(p + "attn.attn.out_linear.bias");
     P.w_cg_pw1  = W.get(p + "attn.c.pw1.weight");
