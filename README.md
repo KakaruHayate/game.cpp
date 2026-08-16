@@ -177,6 +177,26 @@ ablation) that cuts nsteps=8 segmenter wall time roughly in half.
 - With `--nsteps 1` the cache is automatically disabled even if a threshold is
   set, keeping the fused single-graph path with zero overhead.
 
+### Backend × weights guide
+
+Local measurements (10s clip, seed 42; RTX 2070 Vulkan vs CPU AVX2; all
+configs produce identical note output):
+
+| EP | weights | nsteps=1 | nsteps=8 |
+|----|---------|---------|---------|
+| CPU | Q8_0 | 5.9s | 14.0s（DBCache on） |
+| Vulkan (warm) | F32 | **0.39s** | **0.65s** |
+| Vulkan (warm) | Q8_0 | 0.42s | 1.09s |
+
+- GPU backends are **10–20× faster** than CPU here once warm — use `-full`
+  (F32) packs when a discrete GPU is available; Q8 is a close second if RAM
+  is limited.
+- CPU benefits from Q8 for memory, at essentially the same speed — use the
+  `-q8` pack on CPU.
+- Cold start: the first inference on a GPU compiles shaders
+  (Vulkan/Metal). NVIDIA's driver caches these across runs; expect a couple
+  of extra seconds on the very first invocation.
+
 ## Reproducing the benchmark
 
 ```bash
