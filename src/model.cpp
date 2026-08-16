@@ -13,6 +13,7 @@
 #include <ggml.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -572,10 +573,16 @@ InferResult Model::Impl::infer_with_rng(
     // unless the user picks a threshold explicitly.
     float thr = params.db_cache_threshold;
     if (thr < 0.0f) {
-        const char * bn = internal::backend_name(backend);
-        const bool gpu  = bn && (std::strcmp(bn, "vulkan") == 0 ||
-                                 std::strcmp(bn, "cuda") == 0 ||
-                                 std::strcmp(bn, "metal") == 0);
+        const bool gpu = [this] {
+            const char * bn = internal::backend_name(backend);
+            if (!bn) return false;
+            std::string s(bn);
+            std::transform(s.begin(), s.end(), s.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return s.find("vulkan") != std::string::npos ||
+                   s.find("cuda")   != std::string::npos ||
+                   s.find("metal")  != std::string::npos;
+        }();
         thr = gpu ? 0.0f : 0.25f;
     }
     seg_cache.enabled   = thr > 0.0f && ts.size() > 1;
