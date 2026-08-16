@@ -61,9 +61,11 @@ jobs:
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
             -o model/game_medium.gguf
-          # Quantized Q8_0 GGUF (recommended for CPU/Vulkan: ~3.4x smaller,
-          # note-level near-lossless).  Hard constraints enforced by the
-          # converter: depthwise convs -> F16, norms/scales/biases -> F32.
+          # Quantized Q8_0 GGUF (recommended for CPU: ~3.4x smaller weights,
+          # note-level near-lossless; on GPU backends the warm-path difference
+          # vs F32 is small, so prefer the -full pack for GPU unless RAM-bound).
+          # Hard constraints enforced by the converter:
+          # depthwise convs -> F16, norms/scales/biases -> F32.
           # Shipped in the "-q8" package variants only.
           python scripts/convert_pt_to_gguf.py \
             --model-dir GAME-1.0-medium \
