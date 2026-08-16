@@ -562,8 +562,11 @@ InferResult Model::Impl::infer_with_rng(
         : params.d3pm_ts;
 
     // DBCache: configure + reset per segment (mirrors PyTorch reset on
-    // forward_segmenter_main).
-    seg_cache.enabled   = params.db_cache_threshold > 0.0f;
+    // forward_segmenter_main).  Only meaningful for multi-step D3PM loops:
+    // with a single step there is nothing to cache, so the fused single-graph
+    // path stays active (cache.enabled==false) even when a threshold is set
+    // — that avoids paying the 3-stage split cost for --nsteps 1.
+    seg_cache.enabled   = params.db_cache_threshold > 0.0f && ts.size() > 1;
     seg_cache.threshold = params.db_cache_threshold;
     seg_cache.fn_blocks = params.db_cache_fn_blocks;
     seg_cache.warmup    = params.db_cache_warmup;
