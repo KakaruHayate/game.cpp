@@ -65,7 +65,14 @@ BatchResult Model::infer_batch(const std::vector<BatchItem> & items,
 // ============================================================================
 
 Model::Impl::~Impl() {
+    release_batch_seg();
     if (backend) internal::free_backend(backend);
+}
+
+void Model::Impl::release_batch_seg() {
+    if (batch_seg.alloc) ggml_gallocr_free(batch_seg.alloc);
+    if (batch_seg.ctx)   ggml_free(batch_seg.ctx);
+    batch_seg = {};
 }
 
 std::unique_ptr<Model::Impl> Model::Impl::load(const std::string & path) {
@@ -491,43 +498,68 @@ void Model::Impl::run_segmenter_batch(
 {
     const int D = cfg.embedding_dim;
 
-    StageCtx s(backend, 512 * 1024 * 1024, 16384);
+    // Fast path: the same (T,B) batch segmenter graph is reused across the
+    // D3PM steps of one inference (built once on the first step).
+    if (batch_seg.T == T && batch_seg.B == B && batch_seg.ctx) {
+        ggml_backend_tensor_set(batch_seg.xseg,     x_seg_host, 0, ggml_nbytes(batch_seg.xseg));
+        ggml_backend_tensor_set(batch_seg.noise,    noise_mod3, 0, T * B * sizeof(std::int32_t));
+        ggml_backend_tensor_set(batch_seg.t_tensor, &t_scalar,  0, sizeof(float));
+        ggml_backend_tensor_set(batch_seg.lang,     language,   0, B * sizeof(std::int32_t));
+        std::vector<std::int32_t> pos(T);
+        for (int i = 0; i < T; ++i) pos[i] = i;
+        ggml_backend_tensor_set(batch_seg.positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
+        if (ggml_backend_graph_compute(backend, batch_seg.graph) != GGML_STATUS_SUCCESS)
+            throw Error("graph compute failed (segmenter/batch)");
+        logits_out.resize(ggml_nelements(batch_seg.logits));
+        ggml_backend_tensor_get(batch_seg.logits, logits_out.data(), 0, logits_out.size() * sizeof(float));
+        return;
+    }
 
-    ggml_tensor * xseg        = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, B);
-    ggml_tensor * noise       = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T * B);
-    ggml_tensor * t_tensor    = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, 1, 1, 1);
-    ggml_tensor * lang        = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, B);
-    ggml_tensor * positions   = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+    // Build path (first step for this (T,B)): construct into batch_seg.
+    release_batch_seg();
+    batch_seg.T = T;
+    batch_seg.B = B;
+    ggml_init_params ip{};
+    ip.mem_size = 512 * 1024 * 1024;
+    ip.no_alloc = true;
+    batch_seg.ctx = ggml_init(ip);
+    batch_seg.graph = ggml_new_graph_custom(batch_seg.ctx, 16384, /*grads=*/false);
+    auto & c = batch_seg.ctx;
+    auto * xseg        = batch_seg.xseg      = ggml_new_tensor_3d(c, GGML_TYPE_F32, D, T, B);
+    auto * noise       = batch_seg.noise     = ggml_new_tensor_1d(c, GGML_TYPE_I32, T * B);
+    auto * t_tensor    = batch_seg.t_tensor  = ggml_new_tensor_3d(c, GGML_TYPE_F32, 1, 1, 1);
+    auto * lang        = batch_seg.lang      = ggml_new_tensor_1d(c, GGML_TYPE_I32, B);
+    auto * positions   = batch_seg.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, T);
     for (auto * t : {xseg, noise, t_tensor, lang, positions}) ggml_set_input(t);
 
     // ---- custom front (batch-safe embedding injections) ----
-    ggml_tensor * noise_emb = internal::ops::embedding(s.ctx, segmenter_w.w_noise_embedding, noise);
+    ggml_tensor * noise_emb = internal::ops::embedding(c, segmenter_w.w_noise_embedding, noise);
     // embedding(weight(D,V), idx(T*B)) -> (D, T*B); reshape to (D,T,B).
-    noise_emb = ggml_reshape_3d(s.ctx, ggml_cont(s.ctx, noise_emb), D, T, B);
-    ggml_tensor * x = ggml_add(s.ctx, xseg, noise_emb);
+    noise_emb = ggml_reshape_3d(c, ggml_cont(c, noise_emb), D, T, B);
+    ggml_tensor * x = ggml_add(c, xseg, noise_emb);
 
     if (segmenter_w.w_time_0 && t_tensor) {
-        ggml_tensor * h = internal::ops::linear(s.ctx, t_tensor, segmenter_w.w_time_0, segmenter_w.b_time_0);
-        h = ggml_gelu(s.ctx, h);
-        h = internal::ops::linear(s.ctx, h, segmenter_w.w_time_2, segmenter_w.b_time_2);
+        ggml_tensor * h = internal::ops::linear(c, t_tensor, segmenter_w.w_time_0, segmenter_w.b_time_0);
+        h = ggml_gelu(c, h);
+        h = internal::ops::linear(c, h, segmenter_w.w_time_2, segmenter_w.b_time_2);
         // (D,1,1) -> broadcast add over (D,T,B)
-        x = ggml_add(s.ctx, x, h);
+        x = ggml_add(c, x, h);
     }
 
     if (segmenter_w.w_lang_embedding && lang) {
-        ggml_tensor * le = internal::ops::embedding(s.ctx, segmenter_w.w_lang_embedding, lang);
+        ggml_tensor * le = internal::ops::embedding(c, segmenter_w.w_lang_embedding, lang);
         // (D,B) flat layout d + b*D already matches (D,1,B) ordering — reshape
         // (not view) so T becomes a no-op broadcast dim.
-        le = ggml_reshape_3d(s.ctx, ggml_cont(s.ctx, le), D, 1, B);
-        x = ggml_add(s.ctx, x, le);
+        le = ggml_reshape_3d(c, ggml_cont(c, le), D, 1, B);
+        x = ggml_add(c, x, le);
     }
 
-    x = internal::ops::linear(s.ctx, x, segmenter_w.w_input_proj, segmenter_w.b_input_proj);
+    x = internal::ops::linear(c, x, segmenter_w.w_input_proj, segmenter_w.b_input_proj);
 
     // ---- full block stack (+ latent tap if configured) ----
     ggml_tensor * latent_tap = nullptr;
     for (int i = 0; i < cfg.segmenter.num_layers; ++i) {
-        x = internal::ops::ebf_block(s.ctx, x, segmenter_w.layers[i], positions,
+        x = internal::ops::ebf_block(c, x, segmenter_w.layers[i], positions,
                                      cfg.segmenter.num_heads, cfg.segmenter.head_dim);
         if (cfg.segmenter.return_latent && i == cfg.segmenter.latent_layer_idx - 1) {
             latent_tap = x;
@@ -537,21 +569,23 @@ void Model::Impl::run_segmenter_batch(
     ggml_tensor * latent = nullptr;
     if (cfg.segmenter.return_latent && latent_tap) {
         ggml_tensor * lt = latent_tap;
-        if (segmenter_w.w_latent_norm) lt = internal::ops::rms_norm(s.ctx, lt, segmenter_w.w_latent_norm);
-        latent = ggml_cont(s.ctx, internal::ops::linear(s.ctx, lt, segmenter_w.w_latent_proj, segmenter_w.b_latent_proj));
+        if (segmenter_w.w_latent_norm) lt = internal::ops::rms_norm(c, lt, segmenter_w.w_latent_norm);
+        latent = ggml_cont(c, internal::ops::linear(c, lt, segmenter_w.w_latent_proj, segmenter_w.b_latent_proj));
         ggml_set_output(latent);
-        ggml_build_forward_expand(s.graph, latent);
+        ggml_build_forward_expand(batch_seg.graph, latent);
     }
 
     // ---- head ----
-    if (segmenter_w.w_output_norm) x = internal::ops::rms_norm(s.ctx, x, segmenter_w.w_output_norm);
-    ggml_tensor * logitsT = internal::ops::linear(s.ctx, x, segmenter_w.w_output_proj, segmenter_w.b_output_proj);
-    logitsT = ggml_cont(s.ctx, logitsT);                      // (1, T, B) after proj(D->1)... linear gives (1,T,B)
-    ggml_set_output(logitsT);
-    ggml_build_forward_expand(s.graph, logitsT);
-    s.dump_backend_support("segmenter/batch");
-    s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/batch)");
+    if (segmenter_w.w_output_norm) x = internal::ops::rms_norm(c, x, segmenter_w.w_output_norm);
+    ggml_tensor * logitsT = internal::ops::linear(c, x, segmenter_w.w_output_proj, segmenter_w.b_output_proj);
+    batch_seg.logits = ggml_cont(c, logitsT);                // (1, T, B)
+    ggml_set_output(batch_seg.logits);
+    ggml_build_forward_expand(batch_seg.graph, batch_seg.logits);
+    dump_batch_seg_ops();
+
+    batch_seg.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!ggml_gallocr_alloc_graph(batch_seg.alloc, batch_seg.graph))
+        throw Error("alloc failed (segmenter/batch)");
 
     ggml_backend_tensor_set(xseg,     x_seg_host, 0, ggml_nbytes(xseg));
     ggml_backend_tensor_set(noise,    noise_mod3, 0, T * B * sizeof(std::int32_t));
@@ -561,13 +595,28 @@ void Model::Impl::run_segmenter_batch(
     for (int i = 0; i < T; ++i) pos[i] = i;
     ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
 
-    s.compute();
+    if (ggml_backend_graph_compute(backend, batch_seg.graph) != GGML_STATUS_SUCCESS)
+        throw Error("graph compute failed (segmenter/batch)");
 
-    // logitsT is (1, T, B); flatten to (T, B) b-major.
-    logits_out.resize(ggml_nelements(logitsT));
-    ggml_backend_tensor_get(logitsT, logits_out.data(), 0, logits_out.size() * sizeof(float));
-    // logitsT ne = (1, T, B): element index = b*(1*T) + t*1 + 0 → b*T + t. Layout is
-    // exactly what we want: plane b at b*T, and within a plane t ascends.  Good.
+    logits_out.resize(ggml_nelements(batch_seg.logits));
+    ggml_backend_tensor_get(batch_seg.logits, logits_out.data(), 0, logits_out.size() * sizeof(float));
+}
+
+void Model::Impl::dump_batch_seg_ops() {
+    const char * env = std::getenv("GAME_GGML_DUMP_OPS");
+    if (!env || !*env || env[0] == '0') return;
+    std::map<std::string,int> unsupported;
+    const int n = ggml_graph_n_nodes(batch_seg.graph);
+    for (int i = 0; i < n; ++i) {
+        const ggml_tensor * node = ggml_graph_node(batch_seg.graph, i);
+        if (!ggml_backend_supports_op(backend, node)) unsupported[ggml_op_name(node->op)] += 1;
+    }
+    std::fprintf(stderr, "[GAME_GGML_OPS] stage=segmenter/batch backend=%s nodes=%d unsupported=%d\n",
+        internal::backend_name(backend), n,
+        std::accumulate(unsupported.begin(), unsupported.end(), 0,
+            [](int a, const auto & kv){ return a + kv.second; }));
+    for (const auto & kv : unsupported)
+        std::fprintf(stderr, "[GAME_GGML_OPS]   unsupported %-24s %d\n", kv.first.c_str(), kv.second);
 }
 
 // ============================================================================

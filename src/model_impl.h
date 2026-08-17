@@ -17,7 +17,10 @@
 
 struct ggml_backend;
 struct ggml_tensor;
+struct ggml_cgraph;
+struct ggml_gallocr;
 typedef struct ggml_backend * ggml_backend_t;
+typedef struct ggml_gallocr * ggml_gallocr_t;
 
 namespace game_ggml::internal { class IRandomSource; }
 
@@ -84,6 +87,25 @@ struct Model::Impl {
     internal::EncoderWeights   encoder_w;
     internal::SegmenterWeights segmenter_w;
     internal::EstimatorWeights estimator_w;
+
+    // Reusable batched-segmenter graph (avoids rebuilding a 512 MB StageCtx
+    // every D3PM step — the expensive part of the batch path).  Built once for
+    // a given (T,B); freed in ~Impl.  Not thread-safe (single Model + single
+    // batch loop), matching the rest of Impl.
+    struct BatchSegGraph {
+        ggml_context *  ctx   = nullptr;
+        ggml_cgraph  *  graph = nullptr;
+        ggml_gallocr_t  alloc = nullptr;
+        int T = 0, B = 0;
+        ggml_tensor * xseg      = nullptr;
+        ggml_tensor * noise     = nullptr;
+        ggml_tensor * t_tensor  = nullptr;
+        ggml_tensor * lang      = nullptr;
+        ggml_tensor * positions = nullptr;
+        ggml_tensor * logits    = nullptr;
+    } batch_seg;
+    void release_batch_seg();
+    void dump_batch_seg_ops();
 
     ~Impl();
 
