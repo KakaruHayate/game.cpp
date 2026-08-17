@@ -12,6 +12,8 @@ Status: design + partial implementation (feature/batch-infer branch).
   one `(D_mel, T, B)` graph computes all `x_seg`/`x_est` in a single backend
   submit, and the D3PM loop drives a batched segmenter
   (`run_segmenter_batch`) once per time step over the whole `[B,T]` batch.
+  The batched segmenter graph is built once per (T,B) and reused across D3PM
+  steps (no per-step 512 MB StageCtx rebuild).
 - Verified: `Pipeline.BatchFusedEqualsSequential` — batch output equals the
   sequential per-item calls bit-for-bit (equal-length clips, DBCache off in
   both).  CLI-level parity holds (a 1-note flip only from the CPU-default
@@ -19,23 +21,24 @@ Status: design + partial implementation (feature/batch-infer branch).
 - Fallback: differing frame counts → per-item sequential path (identical to
   today's behavior).
 
-## Measured throughput (local)
+## Measured throughput (local, honest)
 
-Equal-length batches, nsteps=8, no-slice:
+Equal-length 5 s batches (B=4), nsteps=8, no-slice, DBCache off both lanes:
 
 | backend | batch vs sequential | note |
 |---|---|---|
-| CPU    | 17.00 s vs 17.26 s  (1.02×) | segmenter kernels are single-thread per op; batch removes graph-setup only |
-| Vulkan | 2.97 s vs 2.63 s    (0.89×) | ggml Vulkan mul_mat does NOT parallelise the ne2 (B) dimension into sample-level parallelism; batch adds sync cost |
+| CPU    | 16.15 s vs 16.58 s (1.03×) | graph reuse applied; CPU mul_mat serial over B |
+| Vulkan | 2.97 s vs 2.63 s   (0.89×) | Vulkan mul_mat does not parallelise ne2 |
+| CUDA   | 8.41 s vs 6.01 s   (0.71×) | cublasGemmStridedBatched used for ne2, but matrices are small (~512×128); batched-API overhead + larger tensor copies exceed any kernel win |
 
-Root cause: ggml's `mul_mat` kernels iterate the batch (ne2) dimension serially
-inside each op — batching does not convert into extra parallelism on CPU or
-Vulkan.  Real wins are expected on CUDA (batched GEMM) / larger B / graph
-pre-allocation; that is the remaining throughput work.
+Conclusion: the batched path is semantically complete and bit-identical, but
+gives **no throughput win on this small model / these ggml backends** — the
+matrices are too small for batching overheads to pay off, and CPU/Vulkan
+kernels do not parallelise the B dimension.  This is an honest benchmark
+finding, not a limitation fixable in our layer.
 
 Still open: estimator batch fusion (Nmax pad + per-sample joint mask),
-arbitrary-length mask padding, serve-protocol batch requests, and the CUDA /
-graph-reuse throughput follow-up.
+arbitrary-length mask padding, serve-protocol batch requests.
 
 ## Reference semantics (GAME `infer.py`)
 
