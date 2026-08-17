@@ -1,8 +1,25 @@
 # Batch inference design (`batchinfer`)
 
-Status: design.  Mirrors GAME `infer.py extract` batching semantics
-(collate slices of several audio files → run each pipeline stage on
-`[B, T]` tensors with a per-sample valid mask → split results back).
+Status: design + partial implementation (feature/batch-infer branch).
+
+## Implemented & verified
+
+- Public `infer_batch(items, params)` with deterministic per-item seeds.
+- CLI `extract` accepts a file, a directory (recursive audio scan) or a glob.
+- Fused multi-sample encoder: when all items share the same mel frame count,
+  one `(D_mel, T, B)` graph computes all `x_seg`/`x_est` in a single backend
+  submit.  D3PM loop + estimator + decode then run per-sample on the shared
+  encoding (`infer_from_latent` extracted from `infer_with_rng`).
+- Verified: `Pipeline.BatchFusedEqualsSequential` — batch output equals the
+  sequential per-item calls bit-for-bit (equal-length clips).  NB: the fused
+  path must NOT force DBCache off — the caller's cache preference is respected
+  and seg_cache resets per item inside infer_from_latent.
+- Fallback: differing frame counts → per-item sequential path (identical to
+  today's behavior).
+
+Still open: segmenter / estimator batch fusion (nsteps-D3PM loop over a whole
+`[B,T]` batch), arbitrary-length mask padding, serve-protocol batch requests,
+CLI wiring to infer_batch for same-length groups, and throughput benchmark.
 
 ## Reference semantics (GAME `infer.py`)
 
