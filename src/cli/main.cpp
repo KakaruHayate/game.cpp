@@ -546,6 +546,104 @@ int cmd_extract(int argc, char ** argv) {
     MidiWriteOptions mopts;
     mopts.tempo_bpm = tempo;
 
+    // -------- batched extract (--batch-size>1): group same-length slices ----
+    // Collect every (file, slice) into a flat item list, group slices by mel
+    // frame count, and feed each group to infer_batch.  The fused encoder
+    // + segmenter path activates when all group members share the same T;
+    // otherwise infer_batch falls back to sequential (still correct).
+    if (batch_size > 1) {
+        struct SliceRef { int file_idx; double offset; std::vector<float> wav; };
+        std::vector<SliceRef> slices;
+        std::vector<fs::path> file_paths;
+        for (const auto & f : input_files) {
+            fs::path in_path(f);
+            std::error_code ec2;
+            WavFile wav;
+            try { wav = load_wav_mono_f32(f, sample_rate); }
+            catch (const std::exception & e) {
+                std::fprintf(stderr, "  !! skip %s: %s\n", f.c_str(), e.what());
+                continue;
+            }
+            if (wav.samples.empty()) continue;
+            std::vector<SliceChunk> chunks;
+            if (no_slice) chunks.push_back({0.0, wav.samples});
+            else chunks = slice_waveform(wav.samples.data(), wav.samples.size(), slc_cfg);
+            const int fi = static_cast<int>(file_paths.size());
+            file_paths.push_back(in_path);
+            for (auto & c : chunks) {
+                // Skip tiny/silent leftovers the same way the sequential path
+                // tolerates them (non-fatal).
+                slices.push_back({fi, c.offset_seconds, std::move(c.waveform)});
+            }
+        }
+        std::fprintf(stderr, "[batch] %zu slices across %zu files, batch_size=%d\n",
+                     slices.size(), file_paths.size(), batch_size);
+
+        // Group by frame count.
+        std::map<int, std::vector<std::size_t>> groups;
+        for (std::size_t i = 0; i < slices.size(); ++i) {
+            int T = model_core.internals().frames_for(slices[i].wav.size());
+            if (T <= 0) T = 1;
+            groups[T].push_back(i);
+        }
+        int n_files_done = 0; std::vector<bool> file_done(file_paths.size(), false);
+        for (auto & [T, idxs] : groups) {
+            for (std::size_t base = 0; base < idxs.size(); base += (std::size_t)batch_size) {
+                const std::size_t n = std::min((std::size_t)batch_size, idxs.size() - base);
+                std::vector<BatchItem> items;
+                items.reserve(n);
+                std::vector<std::pair<int,double>> meta;  // (file_idx, slice offset)
+                for (std::size_t k = 0; k < n; ++k) {
+                    const auto & s = slices[idxs[base + k]];
+                    items.push_back(BatchItem{ s.wav.data(), s.wav.size(),
+                                               language > 0 ? language : 0 });
+                    meta.push_back({s.file_idx, s.offset});
+                }
+                std::fprintf(stderr, "[batch] infer_batch T=%d n=%zu\n", T, n);
+                auto br = model_core.infer_batch(items, p);
+                // Reconstruct per-file note lists.
+                std::vector<std::vector<Note>> per_file(file_paths.size());
+                for (std::size_t k = 0; k < n && k < br.items.size(); ++k) {
+                    auto & res = br.items[k];
+                    auto & pf = per_file[meta[k].first];
+                    for (auto & nt : res.notes) {
+                        nt.offset_seconds += static_cast<float>(meta[k].second);
+                        pf.push_back(nt);
+                    }
+                    file_done[meta[k].first] = true;
+                }
+                // Write once per file, when the file has a complete note list.
+                for (std::size_t fi = 0; fi < per_file.size(); ++fi) {
+                    if (!file_done[fi] || per_file[fi].empty()) continue;
+                    const fs::path & in_path = file_paths[fi];
+                    fs::path file_out_dir = output_dir.empty()
+                        ? in_path.parent_path() : fs::path(output_dir);
+                    fs::create_directories(file_out_dir);
+                    const std::string stem = in_path.stem().string();
+                    if (output_formats.count("mid")) {
+                        auto p_out = file_out_dir / (stem + ".mid");
+                        write_midi_file(p_out.string(), per_file[fi], mopts);
+                        std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
+                    }
+                    if (output_formats.count("txt")) {
+                        auto p_out = file_out_dir / (stem + ".txt");
+                        write_text_file(p_out.string(), per_file[fi], TextFormat::Txt, text_opts);
+                        std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
+                    }
+                    if (output_formats.count("csv")) {
+                        auto p_out = file_out_dir / (stem + ".csv");
+                        write_text_file(p_out.string(), per_file[fi], TextFormat::Csv, text_opts);
+                        std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
+                    }
+                    ++n_files_done;
+                    file_done[fi] = false;  // written
+                }
+            }
+        }
+        std::fprintf(stderr, "[batch] processed %d/%zu files\n", n_files_done, file_paths.size());
+        return 0;
+    }
+
     // -------- per-file: load → slice → run → write output beside input ----
     int n_files = 0, n_notes = 0;
     for (const auto & f : input_files) {

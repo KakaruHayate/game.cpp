@@ -90,6 +90,12 @@ struct Model::Impl {
     // Load + bind.
     static std::unique_ptr<Impl> load(const std::string & path);
 
+    // Expose the mel front-end frame count for a given waveform length
+    // (used by the CLI to group equal-length slices before batching).
+    int frames_for(std::size_t n_samples) const {
+        return mel_extractor->num_frames(n_samples);
+    }
+
     // Main entry — used both by Model::infer (wraps its own MT19937Rng) and
     // by the test suite (passes an InjectedRng).
     InferResult infer_with_rng(
