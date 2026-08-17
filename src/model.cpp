@@ -58,17 +58,16 @@ BatchResult Model::infer_batch(const std::vector<BatchItem> & items,
     // Deterministic seed policy: derive per-item seeds from the base seed so a
     // batch run with a fixed seed reproduces the per-item sequential results.
     std::uint64_t base = params.seed;
-    if (base == 0) base = std::random_device{}();
+    bool random_base = (base == 0);
+    if (random_base) base = std::random_device{}();
 
     BatchResult out;
     out.items.reserve(items.size());
     for (std::size_t i = 0; i < items.size(); ++i) {
         const auto & it = items[i];
         InferParams p = params;
-        p.seed = base + static_cast<std::uint64_t>(i);
-        // infer_with_rng takes ownership of the rng; seed 0 would re-randomize.
-        internal::MT19937Rng rng(base + i);
-        p.seed = 0;  // already applied via the rng
+        p.seed = 0;  // applied via the rng below, not via infer()
+        internal::MT19937Rng rng(random_base ? std::random_device{}() : base + i);
         out.items.push_back(
             impl_->infer_with_rng(it.waveform, it.n_samples, p, rng));
     }
