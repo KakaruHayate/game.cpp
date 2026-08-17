@@ -79,4 +79,17 @@ struct InferResult {
     int db_cache_misses = 0;
 };
 
+// One audio clip queued into a batched inference (mirrors infer.py's
+// SlicedAudioFileIterableDataset collate input).
+struct BatchItem {
+    const float * waveform = nullptr;   // 44100 Hz mono, [-1, 1]
+    std::size_t   n_samples = 0;
+    int           language = 0;
+};
+
+// Batched inference outcome — one result per input item, in order.
+struct BatchResult {
+    std::vector<InferResult> items;
+};
+
 }  // namespace game_ggml

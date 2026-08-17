@@ -73,6 +73,35 @@ std::set<std::string> split_set(const std::string & s, char sep = ',') {
     return out;
 }
 
+// ---- minimal glob (filename wildcards, dir part literal) ------------------
+bool glob_match(const std::string & name, const std::string & pat) {
+    // Iterative wildcard matcher supporting '*' and '?'; '.' literal in pat.
+    std::size_t ni = 0, pi = 0, star = std::string::npos, n0 = 0;
+    while (ni < name.size()) {
+        if (pi < pat.size() && (pat[pi] == '?' || pat[pi] == name[ni])) { ++ni; ++pi; }
+        else if (pi < pat.size() && pat[pi] == '*') { star = pi++; n0 = ni; }
+        else if (star != std::string::npos) { pi = star + 1; ni = ++n0; }
+        else return false;
+    }
+    while (pi < pat.size() && pat[pi] == '*') ++pi;
+    return pi == pat.size();
+}
+
+std::vector<std::string> glob_files(const std::string & pattern) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    fs::path pat_path(pattern);
+    fs::path dir = pat_path.parent_path();
+    if (dir.empty()) dir = ".";
+    std::string filt = pat_path.filename().string();
+    for (fs::directory_iterator it(dir, ec), end; it != end && !ec; it.increment(ec)) {
+        if (it->is_regular_file(ec) && glob_match(it->path().filename().string(), filt)) {
+            out.push_back(it->path().string());
+        }
+    }
+    return out;
+}
+
 // ---- --version ----------------------------------------------------------
 
 void print_usage(const char * argv0) {
@@ -371,7 +400,7 @@ int cmd_extract(int argc, char ** argv) {
     using namespace game_ggml;
     using namespace game_ggml::cli;
 
-    if (argc < 1) { std::fprintf(stderr, "usage: extract <wav> -m <gguf> [options]\n"); return 1; }
+    if (argc < 1) { std::fprintf(stderr, "usage: extract <wav|dir> -m <gguf> [options]\n"); return 1; }
     const std::string input = argv[0];
 
     std::string model_path;
@@ -398,6 +427,7 @@ int cmd_extract(int argc, char ** argv) {
     float db_cache_err_limit    = 0.5f;
     int   db_cache_max_cont     = 0;
     int   db_cache_bn_blocks    = 0;
+    int   batch_size   = 4;              // slices collated into one batch (infer.py default)
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -429,6 +459,7 @@ int cmd_extract(int argc, char ** argv) {
         else if (a == "--cache-error-limit")           db_cache_err_limit    = std::stof(next(a));
         else if (a == "--cache-max-continuous")        db_cache_max_cont     = std::atoi(next(a).c_str());
         else if (a == "--cache-bn-blocks")             db_cache_bn_blocks    = std::atoi(next(a).c_str());
+        else if (a == "--batch-size")                  batch_size = std::atoi(next(a).c_str());
         else {
             std::fprintf(stderr, "unknown option: %s\n", a.c_str());
             return 1;
@@ -436,25 +467,56 @@ int cmd_extract(int argc, char ** argv) {
     }
     if (model_path.empty()) { std::fprintf(stderr, "error: -m/--model is required\n"); return 1; }
 
-    // Load model.
-    std::fprintf(stderr, "loading model: %s\n", model_path.c_str());
-    auto model = Model::load(model_path);
-
-    // Load WAV.
-    std::fprintf(stderr, "loading wav: %s\n", input.c_str());
-    auto wav = load_wav_mono_f32(input, model.config().inference.audio_sample_rate);
-
-    // Slice + inference per chunk.
-    SlicerConfig slc_cfg;
-    slc_cfg.sample_rate = model.config().inference.audio_sample_rate;
-    std::vector<SliceChunk> chunks;
-    if (no_slice) {
-        chunks.push_back({0.0, wav.samples});
-        std::fprintf(stderr, "slicing disabled; using 1 chunk\n");
-    } else {
-        chunks = slice_waveform(wav.samples.data(), wav.samples.size(), slc_cfg);
-        std::fprintf(stderr, "sliced into %zu chunk(s)\n", chunks.size());
+    // -------- expand input to a list of audio files (infer.py-compatible) ----
+    std::vector<std::string> input_files;
+    {
+        std::error_code ec;
+        fs::path inp(input);
+        fs::file_status st = fs::status(inp, ec);
+        if (fs::is_directory(st)) {
+            for (fs::recursive_directory_iterator it(inp, ec), end;
+                 it != end && !ec; it.increment(ec)) {
+                std::string ext = it->path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (ext == ".wav" || ext == ".flac" || ext == ".mp3" || ext == ".m4a" || ext == ".ogg") {
+                    input_files.push_back(it->path().string());
+                }
+            }
+        } else if (fs::exists(st)) {
+            input_files.push_back(input);
+        } else {
+            // Fall back to treating the argument as a glob pattern.
+            for (const auto & match : glob_files(input)) input_files.push_back(match);
+        }
+        if (input_files.empty()) {
+            std::fprintf(stderr, "error: no audio files found for input '%s'\n", input.c_str());
+            return 1;
+        }
+        std::sort(input_files.begin(), input_files.end());
     }
+
+    // Optional bit-exact RNG replay.  When provided we reuse a single
+    // InjectedRng across every chunk of every file — matches the sequential
+    // consumption order used by PyTorch with batch-size=1.
+    std::unique_ptr<game_ggml::internal::IRandomSource> replay_rng;
+    if (!rng_replay_path.empty()) {
+        std::ifstream f(rng_replay_path, std::ios::binary);
+        if (!f) { std::fprintf(stderr, "error: cannot open rng file: %s\n", rng_replay_path.c_str()); return 1; }
+        f.seekg(0, std::ios::end);
+        const std::size_t bytes = f.tellg();
+        f.seekg(0, std::ios::beg);
+        std::vector<float> vals(bytes / sizeof(float));
+        f.read(reinterpret_cast<char*>(vals.data()), bytes);
+        std::fprintf(stderr, "[rng-replay] loaded %zu uniform samples from %s\n",
+                     vals.size(), rng_replay_path.c_str());
+        replay_rng = std::make_unique<game_ggml::internal::InjectedRng>(std::move(vals));
+    }
+
+    // Load model once (shared across all input files).
+    std::fprintf(stderr, "loading model: %s\n", model_path.c_str());
+    auto model_core = Model::load(model_path);
+    const int sample_rate = model_core.config().inference.audio_sample_rate;
 
     InferParams p;
     p.language            = language;
@@ -474,72 +536,84 @@ int cmd_extract(int argc, char ** argv) {
     p.db_cache_max_cont     = db_cache_max_cont;
     p.db_cache_bn_blocks    = db_cache_bn_blocks;
 
-    std::vector<Note> all_notes;
-
-    // Optional bit-exact RNG replay.  When a file is provided we load the
-    // whole sequence at once and reuse a single InjectedRng across every
-    // chunk — matches the sequential consumption order used by PyTorch when
-    // run with batch-size=1.
-    std::unique_ptr<game_ggml::internal::IRandomSource> replay_rng;
-    if (!rng_replay_path.empty()) {
-        std::ifstream f(rng_replay_path, std::ios::binary);
-        if (!f) { std::fprintf(stderr, "error: cannot open rng file: %s\n", rng_replay_path.c_str()); return 1; }
-        f.seekg(0, std::ios::end);
-        const std::size_t bytes = f.tellg();
-        f.seekg(0, std::ios::beg);
-        std::vector<float> vals(bytes / sizeof(float));
-        f.read(reinterpret_cast<char*>(vals.data()), bytes);
-        std::fprintf(stderr, "[rng-replay] loaded %zu uniform samples from %s\n",
-                     vals.size(), rng_replay_path.c_str());
-        replay_rng = std::make_unique<game_ggml::internal::InjectedRng>(std::move(vals));
-    }
-
-    for (std::size_t i = 0; i < chunks.size(); ++i) {
-        auto & ch = chunks[i];
-        std::fprintf(stderr, "  chunk %zu/%zu offset=%.3fs len=%.3fs\n",
-                     i + 1, chunks.size(), ch.offset_seconds,
-                     double(ch.waveform.size()) / slc_cfg.sample_rate);
-        InferResult r;
-        if (replay_rng) {
-            r = model.internals().infer_with_rng(
-                ch.waveform.data(), ch.waveform.size(), p, *replay_rng);
-        } else {
-            r = model.infer(ch.waveform.data(), ch.waveform.size(), p);
-        }
-        for (auto & n : r.notes) {
-            n.offset_seconds += static_cast<float>(ch.offset_seconds);
-            all_notes.push_back(n);
-        }
-    }
-    std::fprintf(stderr, "total notes: %zu\n", all_notes.size());
-
-    // Output.
-    fs::path in_path(input);
-    fs::path out_dir = output_dir.empty() ? in_path.parent_path() : fs::path(output_dir);
-    fs::create_directories(out_dir);
-    const std::string stem = in_path.stem().string();
+    SlicerConfig slc_cfg;
+    slc_cfg.sample_rate = sample_rate;
 
     TextWriteOptions text_opts;
     text_opts.round_pitch = round_pitch;
     text_opts.use_names   = (pitch_format != "number");
 
-    if (output_formats.count("mid")) {
-        MidiWriteOptions mopts;
-        mopts.tempo_bpm = tempo;
-        auto p_out = out_dir / (stem + ".mid");
-        write_midi_file(p_out.string(), all_notes, mopts);
-        std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
+    MidiWriteOptions mopts;
+    mopts.tempo_bpm = tempo;
+
+    // -------- per-file: load → slice → run → write output beside input ----
+    int n_files = 0, n_notes = 0;
+    for (const auto & f : input_files) {
+        fs::path in_path(f);
+        ++n_files;
+        std::fprintf(stderr, "[%d/%zu] loading wav: %s\n", n_files, input_files.size(), f.c_str());
+        WavFile wav;
+        try { wav = load_wav_mono_f32(f, sample_rate); }
+        catch (const std::exception & e) {
+            std::fprintf(stderr, "  !! skip %s: %s\n", f.c_str(), e.what());
+            continue;
+        }
+        if (wav.samples.empty()) { std::fprintf(stderr, "  !! skip %s: empty\n", f.c_str()); continue; }
+
+        std::vector<SliceChunk> chunks;
+        if (no_slice) {
+            chunks.push_back({0.0, wav.samples});
+        } else {
+            chunks = slice_waveform(wav.samples.data(), wav.samples.size(), slc_cfg);
+        }
+        std::fprintf(stderr, "  sliced into %zu chunk(s)\n", chunks.size());
+
+        std::vector<Note> all_notes;
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            auto & ch = chunks[i];
+            std::fprintf(stderr, "  chunk %zu/%zu offset=%.3fs len=%.3fs\n",
+                         i + 1, chunks.size(), ch.offset_seconds,
+                         double(ch.waveform.size()) / sample_rate);
+            InferResult r;
+            if (replay_rng) {
+                r = model_core.internals().infer_with_rng(
+                    ch.waveform.data(), ch.waveform.size(), p, *replay_rng);
+            } else {
+                r = model_core.infer(ch.waveform.data(), ch.waveform.size(), p);
+            }
+            for (auto & n : r.notes) {
+                n.offset_seconds += static_cast<float>(ch.offset_seconds);
+                all_notes.push_back(n);
+            }
+        }
+        std::fprintf(stderr, "  total notes: %zu\n", all_notes.size());
+        n_notes += static_cast<int>(all_notes.size());
+
+        // Output (relative to out_dir).  Single-file input without --output-dir
+        // keeps old behavior (beside the input); directory input writes under
+        // out_dir, defaulting to the same dir as input.
+        fs::path file_out_dir = output_dir.empty() ? in_path.parent_path() : fs::path(output_dir);
+        fs::create_directories(file_out_dir);
+        const std::string stem = in_path.stem().string();
+
+        if (output_formats.count("mid")) {
+            auto p_out = file_out_dir / (stem + ".mid");
+            write_midi_file(p_out.string(), all_notes, mopts);
+            std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
+        }
+        if (output_formats.count("txt")) {
+            auto p_out = file_out_dir / (stem + ".txt");
+            write_text_file(p_out.string(), all_notes, TextFormat::Txt, text_opts);
+            std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
+        }
+        if (output_formats.count("csv")) {
+            auto p_out = file_out_dir / (stem + ".csv");
+            write_text_file(p_out.string(), all_notes, TextFormat::Csv, text_opts);
+            std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
+        }
     }
-    if (output_formats.count("txt")) {
-        auto p_out = out_dir / (stem + ".txt");
-        write_text_file(p_out.string(), all_notes, TextFormat::Txt, text_opts);
-        std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
-    }
-    if (output_formats.count("csv")) {
-        auto p_out = out_dir / (stem + ".csv");
-        write_text_file(p_out.string(), all_notes, TextFormat::Csv, text_opts);
-        std::fprintf(stderr, "wrote %s\n", p_out.string().c_str());
-    }
+    std::fprintf(stderr, "processed %d/%zu files, %d notes total\n",
+                 n_files, input_files.size(), n_notes);
     return 0;
 }
 

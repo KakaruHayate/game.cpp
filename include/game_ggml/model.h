@@ -37,6 +37,13 @@ public:
     InferResult infer(const float * waveform, std::size_t n_samples,
                       const InferParams & params);
 
+    // Batched inference — currently a thin wrapper that processes each item
+    // sequentially with the given params (same RNG seed policy as infer, one
+    // rng per item so results equal the per-item infer calls).  Intended to be
+    // replaced by a real [B,T] fused path (see docs/batch-inference-design.md).
+    BatchResult infer_batch(const std::vector<BatchItem> & items,
+                            const InferParams & params);
+
     // Forward declaration of the internal state — kept opaque to consumers
     // so the public ABI doesn't depend on ggml's layout.
     struct Impl;
