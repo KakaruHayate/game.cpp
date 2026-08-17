@@ -97,8 +97,16 @@ struct Model::Impl {
         const InferParams & params,
         internal::IRandomSource & rng);
 
+    // Batched entry.  When all items share the same mel frame count it runs a
+    // fused multi-sample encoder (`[B,T]` graph) and then per-sample
+    // segmenter/estimator on the shared encoding; otherwise it falls back to
+    // per-item infer_with_rng (the current sequential baseline).
+    std::vector<InferResult> infer_batch_impl(
+        const std::vector<BatchItem> & items, const InferParams & params,
+        std::vector<std::uint64_t> given_seeds /* empty => derive */);
+
 private:
-    // Pipeline stages.
+    // Pipeline stages (single-sample, existing path).
     void run_encoder(const float * mel, int T,
                      std::vector<float> & x_seg_out,
                      std::vector<float> & x_est_out);
@@ -112,6 +120,32 @@ private:
         const float * x_est_host, int T,
         const std::int32_t * regions, int N,
         std::vector<float> & pool_logits_out);
+
+    // D3PM loop + estimator + decode given pre-computed encoder latents for a
+    // single sample (shared by infer_with_rng and the batched path).
+    InferResult infer_from_latent(
+        const float * x_seg, const float * x_est, int T,
+        const InferParams & params, internal::IRandomSource & rng);
+
+    // Pipeline stages (batched).  `B` tensors processed together in one graph.
+    //   mel      : (D_mel, T, B) — pre-padded, uploaded by the caller
+    //   mask     : (T, B) uint8  — per-frame validity (0=pad).  Drains through
+    //              the whole encoder as `masked_fill` semantics.
+    void run_encoder_batch(const float * mel, int T, int B, const std::uint8_t * mask,
+                           std::vector<float> & x_seg_out,   // (D, T*B)
+                           std::vector<float> & x_est_out);  // (D, T*B)
+
+    // Segmenter front+head for every sample in the batch.
+    void run_segmenter_batch(const float * x_seg_host, int T, int B,
+                             const std::int32_t * noise_mod3,  // (T, B)
+                             float t_scalar, const int * language,  // (B)
+                             std::vector<float> & logits_out);  // (T, B)
+
+    void run_estimator_batch(const float * x_est_host, int T, int B,
+                             const std::int32_t * regions,  // (T, B)
+                             const int * Ns,                // (B) valid note count
+                             int N_max,
+                             std::vector<float> & pool_logits_out);  // flat (bins * N_max * B)
 };
 
 }  // namespace game_ggml

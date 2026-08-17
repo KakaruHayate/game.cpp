@@ -55,23 +55,9 @@ InferResult Model::infer(const float * waveform, std::size_t n_samples,
 
 BatchResult Model::infer_batch(const std::vector<BatchItem> & items,
                                const InferParams & params) {
-    // Deterministic seed policy: derive per-item seeds from the base seed so a
-    // batch run with a fixed seed reproduces the per-item sequential results.
     std::uint64_t base = params.seed;
-    bool random_base = (base == 0);
-    if (random_base) base = std::random_device{}();
-
-    BatchResult out;
-    out.items.reserve(items.size());
-    for (std::size_t i = 0; i < items.size(); ++i) {
-        const auto & it = items[i];
-        InferParams p = params;
-        p.seed = 0;  // applied via the rng below, not via infer()
-        internal::MT19937Rng rng(random_base ? std::random_device{}() : base + i);
-        out.items.push_back(
-            impl_->infer_with_rng(it.waveform, it.n_samples, p, rng));
-    }
-    return out;
+    if (base == 0) base = std::random_device{}();
+    return BatchResult{ impl_->infer_batch_impl(items, params, {}) };
 }
 
 // ============================================================================
@@ -230,6 +216,47 @@ void Model::Impl::run_encoder(const float * mel, int T,
     s.dump_backend_support("encoder");
     s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
     if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (encoder)");
+
+    ggml_backend_tensor_set(mel_in, mel, 0, ggml_nbytes(mel_in));
+    std::vector<std::int32_t> pos_i(T);
+    for (int i = 0; i < T; ++i) pos_i[i] = i;
+    ggml_backend_tensor_set(pos, pos_i.data(), 0, pos_i.size() * sizeof(std::int32_t));
+
+    s.compute();
+
+    x_seg_out.resize(ggml_nelements(outs.x_seg));
+    x_est_out.resize(ggml_nelements(outs.x_est));
+    ggml_backend_tensor_get(outs.x_seg, x_seg_out.data(), 0, x_seg_out.size() * sizeof(float));
+    ggml_backend_tensor_get(outs.x_est, x_est_out.data(), 0, x_est_out.size() * sizeof(float));
+}
+
+// Batched encoder: B samples share one (D_mel, T, B) input and a shared
+// positions vector 0..T-1.  Requires all samples to have the SAME frame count
+// T (no padding) — the caller guarantees this by grouping equal-length clips.
+void Model::Impl::run_encoder_batch(const float * mel, int T, int B,
+                                    const std::uint8_t * mask,
+                                    std::vector<float> & x_seg_out,
+                                    std::vector<float> & x_est_out) {
+    const int D_mel = cfg.in_dim;
+    const int D_emb = cfg.embedding_dim;
+
+    StageCtx s(backend, 256 * 1024 * 1024, 8192);
+
+    ggml_tensor * mel_in = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D_mel, T, B);
+    ggml_set_input(mel_in);
+    ggml_tensor * pos = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+    ggml_set_input(pos);
+
+    ggml_tensor * x_proj = internal::ops::linear(s.ctx, mel_in, w_spec_proj, b_spec_proj);
+    auto outs = internal::build_encoder_graph(s.ctx, x_proj, encoder_w, pos, cfg.encoder);
+
+    ggml_set_output(outs.x_seg);
+    ggml_set_output(outs.x_est);
+    ggml_build_forward_expand(s.graph, outs.x_seg);
+    ggml_build_forward_expand(s.graph, outs.x_est);
+    s.dump_backend_support("encoder/batch");
+    s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (encoder/batch)");
 
     ggml_backend_tensor_set(mel_in, mel, 0, ggml_nbytes(mel_in));
     std::vector<std::int32_t> pos_i(T);
@@ -616,20 +643,26 @@ InferResult Model::Impl::infer_with_rng(
         run_encoder(mel.data(), T, x_seg_host, x_est_host);
     }
 
-    // --- 3) D3PM loop (segmenter)
+    // --- 3) D3PM loop + estimator + decode (shared with the batched path)
+    return infer_from_latent(x_seg_host.data(), x_est_host.data(), T, params, rng);
+}
+
+InferResult Model::Impl::infer_from_latent(
+    const float * x_seg, const float * x_est, int T,
+    const InferParams & params,
+    internal::IRandomSource & rng) {
+    using namespace internal;
+    StageProfiler prof;
+
+    const int D = cfg.embedding_dim;
+
     std::vector<float> ts = params.d3pm_ts.empty()
         ? default_d3pm_schedule(params.d3pm_t0, params.d3pm_nsteps)
         : params.d3pm_ts;
 
-    // DBCache: configure + reset per segment (mirrors PyTorch reset on
-    // forward_segmenter_main).  Only meaningful for multi-step D3PM loops:
-    // with a single step there is nothing to cache, so the fused single-graph
-    // path stays active (cache.enabled==false) even when a threshold is set
-    // — that avoids paying the 3-stage split cost for --nsteps 1.
-    // EP-aware default: on CPU the split-cache path wins big (measured -45%
-    // at nsteps=8); on GPU backends its per-step host round-trips regress
-    // quantized weights (measured +20% on Vulkan+Q8), so default it off
-    // unless the user picks a threshold explicitly.
+    // DBCache: configured per infer (reset per segment).  Mirrors PyTorch
+    // reset on forward_segmenter_main.  With a single step there is nothing to
+    // cache, so the fused single-graph path stays active.
     float thr = params.db_cache_threshold;
     if (thr < 0.0f) {
         const bool gpu = [this] {
@@ -688,7 +721,7 @@ InferResult Model::Impl::infer_with_rng(
 
         {
             auto _ = prof.scope_segmenter();
-            run_segmenter_step(x_seg_host.data(), T,
+            run_segmenter_step(x_seg, T,
                 noise_mod.data(), ti, params.language, logits);
         }
 
@@ -713,8 +746,6 @@ InferResult Model::Impl::infer_with_rng(
 
     InferResult result;
     result.num_frames = T;
-    // DBCache hit/miss for this inference (paths before the early return also
-    // carry the counters already reflected above).
     result.db_cache_hits   = seg_cache.hits;
     result.db_cache_misses = seg_cache.misses;
     if (N == 0) return result;
@@ -722,7 +753,7 @@ InferResult Model::Impl::infer_with_rng(
     // --- 5) estimator
     std::vector<float> pool_logits;
     { auto _ = prof.scope_estimator();
-      run_estimator(x_est_host.data(), T, regions.data(), N, pool_logits); }
+      run_estimator(x_est, T, regions.data(), N, pool_logits); }
 
     // --- 6) pitch decode
     {
@@ -756,6 +787,83 @@ InferResult Model::Impl::infer_with_rng(
         }
     }
     return result;
+}
+
+std::vector<InferResult> Model::Impl::infer_batch_impl(
+    const std::vector<BatchItem> & items, const InferParams & params,
+    std::vector<std::uint64_t> given_seeds) {
+    using namespace internal;
+    if (items.empty()) return {};
+
+    // Derive per-item seeds (deterministic from base when given; else random).
+    std::uint64_t base = params.seed;
+    bool random_base = (base == 0);
+    if (random_base) base = std::random_device{}();
+    if (given_seeds.empty()) {
+        given_seeds.resize(items.size());
+        for (std::size_t i = 0; i < items.size(); ++i)
+            given_seeds[i] = random_base ? std::random_device{}() : base + i;
+    }
+
+    std::vector<InferResult> out;
+    out.reserve(items.size());
+
+    // -------- fused path: all items share the same mel frame count --------
+    // (mel front-end is per-item CPU; encoder is one `[B,T]` graph; the D3PM
+    // loop + estimator + decode stay per-sample on the shared encoding.)
+    {
+        std::vector<std::vector<float>> mel_rows;   // per item: [T, D_mel]
+        mel_rows.reserve(items.size());
+        int T = -1;
+        bool same_t = true;
+        for (const auto & it : items) {
+            auto m = mel_extractor->forward(it.waveform, it.n_samples);
+            const int Ti = mel_extractor->num_frames(it.n_samples);
+            if (T < 0) T = Ti; else if (Ti != T) same_t = false;
+            mel_rows.push_back(std::move(m));
+        }
+        if (same_t && !items.empty() && T > 0) {
+            const int D_mel = cfg.in_dim;
+            const std::size_t B = items.size();
+            std::vector<float> mel_batch(D_mel * T * B, 0.0f);
+            std::vector<std::uint8_t> mask(T * B, 1);
+            for (std::size_t b = 0; b < B; ++b) {
+                const auto & src = mel_rows[b];  // [T, D_mel] row-major
+                float * dst = mel_batch.data() + b * (D_mel * T);
+                for (int t = 0; t < T; ++t)
+                    for (int d = 0; d < D_mel; ++d)
+                        dst[d + t * D_mel] = src[t * D_mel + d];
+            }
+            std::vector<float> x_seg_batch, x_est_batch;
+            {
+                StageProfiler prof; auto _ = prof.scope_encoder();
+                run_encoder_batch(mel_batch.data(), T, static_cast<int>(B),
+                                  mask.data(), x_seg_batch, x_est_batch);
+            }
+            for (std::size_t b = 0; b < B; ++b) {
+                internal::MT19937Rng rng(given_seeds[b]);
+                InferParams p = params;
+                // DBCache is per-sample state configured inside
+                // infer_from_latent (which resets seg_cache each call), so the
+                // batched path can safely use the caller's cache preference.
+                p.seed = 0;
+                const float * xs = x_seg_batch.data() + b * (cfg.embedding_dim * T);
+                const float * xe = x_est_batch.data() + b * (cfg.embedding_dim * T);
+                out.push_back(infer_from_latent(xs, xe, T, p, rng));
+            }
+            return out;
+        }
+    }
+
+    // -------- fallback: sequential per-item path --------
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const auto & it = items[i];
+        internal::MT19937Rng rng(given_seeds[i]);
+        InferParams p = params;
+        p.seed = 0;
+        out.push_back(infer_with_rng(it.waveform, it.n_samples, p, rng));
+    }
+    return out;
 }
 
 }  // namespace game_ggml
