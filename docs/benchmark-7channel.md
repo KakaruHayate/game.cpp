@@ -88,3 +88,23 @@ Rules of thumb:
   otherwise either package is valid.
 - No user escalation needed: the CLI picks the backend from the GGUF/EP and
   resolves cache by EP (GPU off, CPU auto).
+
+## Package size: LTO
+
+CI builds GPU backends with `-DGGML_LTO=ON` (vulkan/metal; CPU and CUDA keep
+the ggml default OFF — CPU DLLs are tiny and Windows MSVC `/LTCG` mixed with
+nvcc translation units does not converge).
+
+Measured locally (Windows, VS, Release):
+
+| binary | without LTO | with LTO | delta |
+|---|---|---|---|
+| `ggml-vulkan.dll` | 48.4 MB | 34.5 MB | **−28.8 %** |
+| `ggml-cuda.dll` | 174.0 MB | (not buildable with MSVC LTO) | — |
+
+Behavior is unchanged: same input (`w44k_60.wav`, nsteps=8) yields 160 notes
+with both a non-LTO CPU build and the LTO'd Vulkan build.
+
+Whole-package effect (v0.1.0 oudep sizes): GPU F32 packs shrink ~7–12 %
+(weights dominate), GPU Q8 packs ~20–30 %+ (DLL share is much larger).
+
