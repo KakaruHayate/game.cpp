@@ -7,7 +7,13 @@ Status: design + partial implementation (feature/batch-infer branch).
 - Public `infer_batch(items, params)` with deterministic per-item seeds.
 - CLI `extract` accepts a file, a directory (recursive audio scan) or a glob;
   `--batch-size` groups equal-length slices and pushes them through
-  `infer_batch`.
+  `infer_batch`.  Unequal-length slices fall back to the sequential path
+  (still correct — batching is a performance optimisation, never a
+  correctness prerequisite).
+- `serve` protocol gains a batched request (`MAGIC_BATCH "MBAT"`: 36-byte frame
+  whose n_samples field is the item count, then B × (n_samples + waveform)
+  blocks) answered by `{"type":"notes_batch","items":[{count,notes},...]}`.
+  Verified end-to-end with a 2-item request (23 + 34 notes).
 - Fused multi-sample encoder: when all items share the same mel frame count,
   one `(D_mel, T, B)` graph computes all `x_seg`/`x_est` in a single backend
   submit, and the D3PM loop drives a batched segmenter
@@ -37,8 +43,12 @@ matrices are too small for batching overheads to pay off, and CPU/Vulkan
 kernels do not parallelise the B dimension.  This is an honest benchmark
 finding, not a limitation fixable in our layer.
 
-Still open: estimator batch fusion (Nmax pad + per-sample joint mask),
-arbitrary-length mask padding, serve-protocol batch requests.
+Not implemented (deliberately): estimator batch fusion and fused arbitrary-
+length (mask-padded) batching.  Both are performance-only refinements: the
+estimator is ~6 % of wall time and joint-attention per-sample masks would need
+deep graph changes with zero measured benefit; unequal-length items already
+work via the sequential fallback, so mask padding is a fused-path optimisation
+rather than a correctness gap.
 
 ## Reference semantics (GAME `infer.py`)
 
