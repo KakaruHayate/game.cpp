@@ -5,21 +5,37 @@ Status: design + partial implementation (feature/batch-infer branch).
 ## Implemented & verified
 
 - Public `infer_batch(items, params)` with deterministic per-item seeds.
-- CLI `extract` accepts a file, a directory (recursive audio scan) or a glob.
+- CLI `extract` accepts a file, a directory (recursive audio scan) or a glob;
+  `--batch-size` groups equal-length slices and pushes them through
+  `infer_batch`.
 - Fused multi-sample encoder: when all items share the same mel frame count,
   one `(D_mel, T, B)` graph computes all `x_seg`/`x_est` in a single backend
-  submit.  D3PM loop + estimator + decode then run per-sample on the shared
-  encoding (`infer_from_latent` extracted from `infer_with_rng`).
+  submit, and the D3PM loop drives a batched segmenter
+  (`run_segmenter_batch`) once per time step over the whole `[B,T]` batch.
 - Verified: `Pipeline.BatchFusedEqualsSequential` — batch output equals the
-  sequential per-item calls bit-for-bit (equal-length clips).  NB: the fused
-  path must NOT force DBCache off — the caller's cache preference is respected
-  and seg_cache resets per item inside infer_from_latent.
+  sequential per-item calls bit-for-bit (equal-length clips, DBCache off in
+  both).  CLI-level parity holds (a 1-note flip only from the CPU-default
+  DBCache noise, documented behaviour).
 - Fallback: differing frame counts → per-item sequential path (identical to
   today's behavior).
 
-Still open: segmenter / estimator batch fusion (nsteps-D3PM loop over a whole
-`[B,T]` batch), arbitrary-length mask padding, serve-protocol batch requests,
-CLI wiring to infer_batch for same-length groups, and throughput benchmark.
+## Measured throughput (local)
+
+Equal-length batches, nsteps=8, no-slice:
+
+| backend | batch vs sequential | note |
+|---|---|---|
+| CPU    | 17.00 s vs 17.26 s  (1.02×) | segmenter kernels are single-thread per op; batch removes graph-setup only |
+| Vulkan | 2.97 s vs 2.63 s    (0.89×) | ggml Vulkan mul_mat does NOT parallelise the ne2 (B) dimension into sample-level parallelism; batch adds sync cost |
+
+Root cause: ggml's `mul_mat` kernels iterate the batch (ne2) dimension serially
+inside each op — batching does not convert into extra parallelism on CPU or
+Vulkan.  Real wins are expected on CUDA (batched GEMM) / larger B / graph
+pre-allocation; that is the remaining throughput work.
+
+Still open: estimator batch fusion (Nmax pad + per-sample joint mask),
+arbitrary-length mask padding, serve-protocol batch requests, and the CUDA /
+graph-reuse throughput follow-up.
 
 ## Reference semantics (GAME `infer.py`)
 
