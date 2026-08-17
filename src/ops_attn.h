@@ -123,6 +123,7 @@ ggml_tensor * ebf_block(
     ggml_tensor * positions,
     int num_heads,
     int head_dim,
-    float theta = 10000.0f);
+    float theta = 10000.0f,
+    ggml_tensor * mask = nullptr);   // optional (1,T,B) f32; 0 = padding frame.  Applied as x*mask at block boundaries (PyTorch masked_fill semantics for batched inference).
 
 }  // namespace game_ggml::internal::ops

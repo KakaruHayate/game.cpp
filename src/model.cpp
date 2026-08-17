@@ -238,8 +238,8 @@ void Model::Impl::run_encoder(const float * mel, int T,
 }
 
 // Batched encoder: B samples share one (D_mel, T, B) input and a shared
-// positions vector 0..T-1.  Requires all samples to have the SAME frame count
-// T (no padding) — the caller guarantees this by grouping equal-length clips.
+// positions vector 0..T-1.  With a per-frame mask, samples may have unequal
+// lengths (mels are left-aligned, T = max frames, padding frames masked 0).
 void Model::Impl::run_encoder_batch(const float * mel, int T, int B,
                                     const std::uint8_t * mask,
                                     std::vector<float> & x_seg_out,
@@ -254,8 +254,15 @@ void Model::Impl::run_encoder_batch(const float * mel, int T, int B,
     ggml_tensor * pos = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
     ggml_set_input(pos);
 
+    ggml_tensor * mask_f32 = nullptr;
+    if (mask) {
+        mask_f32 = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, 1, T, B);  // (1,T,B)
+        ggml_set_input(mask_f32);
+    }
+
     ggml_tensor * x_proj = internal::ops::linear(s.ctx, mel_in, w_spec_proj, b_spec_proj);
-    auto outs = internal::build_encoder_graph(s.ctx, x_proj, encoder_w, pos, cfg.encoder);
+    auto outs = internal::build_encoder_graph(s.ctx, x_proj, encoder_w, pos, cfg.encoder,
+                                              mask_f32);
 
     ggml_set_output(outs.x_seg);
     ggml_set_output(outs.x_est);
@@ -269,6 +276,11 @@ void Model::Impl::run_encoder_batch(const float * mel, int T, int B,
     std::vector<std::int32_t> pos_i(T);
     for (int i = 0; i < T; ++i) pos_i[i] = i;
     ggml_backend_tensor_set(pos, pos_i.data(), 0, pos_i.size() * sizeof(std::int32_t));
+    if (mask) {
+        std::vector<float> mf(T * B);
+        for (int i = 0; i < T * B; ++i) mf[i] = mask[i] ? 1.0f : 0.0f;
+        ggml_backend_tensor_set(mask_f32, mf.data(), 0, mf.size() * sizeof(float));
+    }
 
     s.compute();
 
@@ -948,32 +960,47 @@ std::vector<InferResult> Model::Impl::infer_batch_impl(
     std::vector<InferResult> out;
     out.reserve(items.size());
 
-    // -------- fused path: all items share the same mel frame count --------
-    // (mel front-end is per-item CPU; encoder is one `[B,T]` graph; the D3PM
-    // loop + estimator + decode stay per-sample on the shared encoding.)
+    // -------- fused path: mel padding + per-frame mask (infer.py semantics) -
+    // mel front-end is per-item CPU; each item's mel is left-aligned into
+    // (D_mel, Tmax, B) with zeros beyond its own frame count; a per-frame mask
+    // (1, Tmax, B) zeroes padding frames through every EBF block.  The D3PM
+    // loop + estimator + decode stay per-sample on the shared encoding.
     {
-        std::vector<std::vector<float>> mel_rows;   // per item: [T, D_mel]
+        std::vector<std::vector<float>> mel_rows;   // per item: [Ti, D_mel]
+        std::vector<int> item_T;
         mel_rows.reserve(items.size());
-        int T = -1;
-        bool same_t = true;
+        item_T.reserve(items.size());
+        int Tmax = 0;
         for (const auto & it : items) {
             auto m = mel_extractor->forward(it.waveform, it.n_samples);
             const int Ti = mel_extractor->num_frames(it.n_samples);
-            if (T < 0) T = Ti; else if (Ti != T) same_t = false;
+            Tmax = std::max(Tmax, Ti);
             mel_rows.push_back(std::move(m));
+            item_T.push_back(Ti);
         }
-        if (same_t && !items.empty() && T > 0) {
+        // Fused path applies only when all items share the same frame count:
+        // mask-padding would only approximate per-item results (PyTorch has
+        // the same property), and the objective demands bit-identical output
+        // vs the single-sample runs.  Unequal lengths → fallback (bit-ideal).
+        const int T0 = item_T.empty() ? 0 : item_T[0];
+        const bool same_t = std::all_of(item_T.begin(), item_T.end(),
+            [T0](int t) { return t == T0; });
+        if (!items.empty() && Tmax > 0 && same_t) {
             const int D_mel = cfg.in_dim;
             const std::size_t B = items.size();
             const int D = cfg.embedding_dim;
-            std::vector<float> mel_batch(D_mel * T * B, 0.0f);
-            std::vector<std::uint8_t> mask(T * B, 1);
+            const int T = Tmax;
+            std::vector<float> mel_batch(static_cast<std::size_t>(D_mel) * T * B, 0.0f);
+            std::vector<std::uint8_t> mask(T * B, 1);   // all frames valid (same T)
             for (std::size_t b = 0; b < B; ++b) {
-                const auto & src = mel_rows[b];  // [T, D_mel] row-major
+                const int Ti = item_T[b];
+                const auto & src = mel_rows[b];     // [Ti, D_mel] row-major
                 float * dst = mel_batch.data() + b * (D_mel * T);
-                for (int t = 0; t < T; ++t)
+                for (int t = 0; t < Ti; ++t) {
                     for (int d = 0; d < D_mel; ++d)
                         dst[d + t * D_mel] = src[t * D_mel + d];
+                    mask[b * T + t] = 1;            // valid frames
+                }
             }
             std::vector<float> x_seg_batch, x_est_batch;
             {
@@ -1046,7 +1073,7 @@ std::vector<InferResult> Model::Impl::infer_batch_impl(
                 for (int t = 0; t < T; ++t) N = std::max<int>(N, regions[t]);
 
                 InferResult res;
-                res.num_frames = T;
+                res.num_frames = item_T[b];      // real length, not Tmax
                 res.db_cache_hits   = 0;
                 res.db_cache_misses = 0;
                 if (N > 0) {

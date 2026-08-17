@@ -153,31 +153,39 @@ ggml_tensor * ebf_block(
     ggml_tensor * positions,
     int num_heads,
     int head_dim,
-    float theta) {
+    float theta,
+    ggml_tensor * mask) {
+    // Apply the per-frame mask at block boundaries (PyTorch masked_fill(~mask,0)
+    // before each sub-block), so padding frames cannot leak through residual or
+    // attention values in a batched call.  mask has ne (1, T, B).
+    auto apply_mask = [&](ggml_tensor * t) -> ggml_tensor * {
+        return mask ? ggml_mul(ctx, t, mask) : t;
+    };
+
     // FFN 1 (pre-attention)
     if (W.has_ffn1) {
-        ggml_tensor * h = rms_norm(ctx, x, W.w_norm1);
+        ggml_tensor * h = rms_norm(ctx, apply_mask(x), W.w_norm1);
         h = glu_ffn(ctx, h, W.w_ffn1_ln1, W.b_ffn1_ln1, W.w_ffn1_ln2, W.b_ffn1_ln2);
         if (W.w_lay_scale1) h = layer_scale(ctx, h, W.w_lay_scale1);
         h = scale_half(ctx, h);
-        x = ggml_add(ctx, x, h);
+        x = ggml_add(ctx, apply_mask(x), h);
     }
 
     // PAC
-    ggml_tensor * p = pac(ctx, x, W.pac_w, positions, num_heads, head_dim, theta);
+    ggml_tensor * p = pac(ctx, apply_mask(x), W.pac_w, positions, num_heads, head_dim, theta);
     if (W.w_lay_scale2) p = layer_scale(ctx, p, W.w_lay_scale2);
-    x = ggml_add(ctx, x, p);
+    x = ggml_add(ctx, apply_mask(x), p);
 
     // FFN 2 (post-attention)
     if (W.has_ffn2) {
-        ggml_tensor * h = rms_norm(ctx, x, W.w_norm2);
+        ggml_tensor * h = rms_norm(ctx, apply_mask(x), W.w_norm2);
         h = glu_ffn(ctx, h, W.w_ffn2_ln1, W.b_ffn2_ln1, W.w_ffn2_ln2, W.b_ffn2_ln2);
         if (W.w_lay_scale3) h = layer_scale(ctx, h, W.w_lay_scale3);
         h = scale_half(ctx, h);
-        x = ggml_add(ctx, x, h);
+        x = ggml_add(ctx, apply_mask(x), h);
     }
 
-    return x;
+    return apply_mask(x);
 }
 
 }  // namespace game_ggml::internal::ops

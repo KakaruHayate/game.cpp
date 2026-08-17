@@ -52,6 +52,7 @@ EncoderOutputs build_encoder_graph(
     const EncoderWeights & W,
     ggml_tensor * positions,            // int32 (T,)
     const BackboneConfig & cfg,
+    ggml_tensor * mask = nullptr,       // optional (1, T, B) f32; 0 = padding frame
     std::vector<ggml_tensor *> * intermediates = nullptr);
 
 }  // namespace game_ggml::internal

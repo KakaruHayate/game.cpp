@@ -166,3 +166,69 @@ TEST(Pipeline, BatchFusedEqualsSequential) {
     ASSERT_EQ(b1.items.size(), 1u);
     cmp("b1", b1.items[0], s0);
 }
+
+// Mask-padding: items of DIFFERENT length batch through the fused path (mel
+// left-aligned, padding frames masked 0) and each item must equal its own
+// sequential run (same seed).
+TEST(Pipeline, BatchFusedUnequalLengthMask) {
+    const char * asset = std::getenv("GAME_GGML_TEST_ASSET");
+    const char * w1 = std::getenv("GAME_GGML_TEST_WAV1");
+    const char * w2 = std::getenv("GAME_GGML_TEST_WAV2");
+    if (!asset || !w1 || !w2) {
+        GTEST_SKIP() << "set GAME_GGML_TEST_ASSET/WAV1/WAV2 to run";
+    }
+    std::string w3 = std::string(w2);          // different length clip
+    fs::path g3 = fs::path(w2).parent_path() / "w44k_30.wav";  // 15 s (≠ 5 s)
+    if (!fs::exists(g3)) g3 = fs::path(w2).parent_path() / "w44k_60.wav";
+    if (!fs::exists(g3)) { GTEST_SKIP() << "no unequal-length wav found"; }
+
+    fs::path gguf = asset;
+    if (!fs::exists(gguf)) GTEST_SKIP() << "asset not found";
+    auto model = Model::load(gguf.string());
+    const int sr = model.config().inference.audio_sample_rate;
+
+    auto a = game_ggml::cli::load_wav_mono_f32(w1, sr);
+    auto b = game_ggml::cli::load_wav_mono_f32(w2, sr);
+    auto c = game_ggml::cli::load_wav_mono_f32(g3.string(), sr);
+    ASSERT_FALSE(a.samples.empty() || b.samples.empty() || c.samples.empty());
+    // ensure they really differ in frame count
+    {
+        auto & m = model.internals();
+        int ta = m.frames_for(a.samples.size());
+        int tc = m.frames_for(c.samples.size());
+        ASSERT_NE(ta, tc) << "need clips with different frame counts";
+    }
+
+    InferParams p;
+    p.language = 4;
+    p.d3pm_nsteps = 8;
+    p.seed = 42;
+    p.db_cache_threshold = 0.0f;
+
+    auto s0 = model.infer(a.samples.data(), a.samples.size(), p);  // seed 42
+    p.seed = 43;
+    auto s2 = model.infer(c.samples.data(), c.samples.size(), p);  // seed 43
+    p.seed = 42;
+
+    std::vector<BatchItem> items = {
+        { a.samples.data(), a.samples.size(), 4 },
+        { c.samples.data(), c.samples.size(), 4 },
+    };
+    auto br = model.infer_batch(items, p);
+    ASSERT_EQ(br.items.size(), 2u);
+
+    EXPECT_EQ(br.items[0].notes.size(), s0.notes.size()) << "unequal item0 count";
+    EXPECT_EQ(br.items[1].notes.size(), s2.notes.size()) << "unequal item1 count";
+    const std::size_t n0 = std::min(br.items[0].notes.size(), s0.notes.size());
+    for (std::size_t i = 0; i < n0; ++i) {
+        EXPECT_NEAR(br.items[0].notes[i].offset_seconds,   s0.notes[i].offset_seconds,   0.011f) << "item0 off";
+        EXPECT_NEAR(br.items[0].notes[i].duration_seconds, s0.notes[i].duration_seconds, 0.011f) << "item0 dur";
+        EXPECT_EQ   (br.items[0].notes[i].voiced, s0.notes[i].voiced)                     << "item0 voiced";
+        if (br.items[0].notes[i].voiced && s0.notes[i].voiced)
+            EXPECT_NEAR(br.items[0].notes[i].pitch_midi, s0.notes[i].pitch_midi, 0.05f)  << "item0 pitch";
+    }
+    EXPECT_EQ(br.items[1].num_frames, (int)model.internals().frames_for(c.samples.size()))
+        << "item1 frames should be its real length";
+    std::fprintf(stderr, "[pipeline.batch.unequal] short:%zu long:%zu -> batch %zu/%zu notes\n",
+        s0.notes.size(), s2.notes.size(), br.items[0].notes.size(), br.items[1].notes.size());
+}

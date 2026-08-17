@@ -114,6 +114,7 @@ EncoderOutputs build_encoder_graph(
     const EncoderWeights & W,
     ggml_tensor * positions,
     const BackboneConfig & cfg,
+    ggml_tensor * mask,
     std::vector<ggml_tensor *> * intermediates)
 {
     // Input projection.  x_in has ne=(D_embed, T, 1).
@@ -122,7 +123,7 @@ EncoderOutputs build_encoder_graph(
 
     for (int i = 0; i < cfg.num_layers; ++i) {
         x = ops::ebf_block(ctx, x, W.layers[i], positions,
-                           cfg.num_heads, cfg.head_dim);
+                           cfg.num_heads, cfg.head_dim, 10000.0f, mask);
         if (intermediates) intermediates->push_back(x);
     }
 

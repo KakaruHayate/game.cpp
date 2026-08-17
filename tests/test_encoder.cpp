@@ -93,7 +93,8 @@ TEST_F(Encoder, PerLayerParity) {
     ggml_set_input(pos);
 
     std::vector<ggml_tensor *> intermediates;
-    auto outs = gi::build_encoder_graph(ctx, xin, enc_w, pos, cfg.encoder, &intermediates);
+    auto outs = gi::build_encoder_graph(ctx, xin, enc_w, pos, cfg.encoder,
+                                        /*mask=*/nullptr, &intermediates);
     ASSERT_EQ(intermediates.size(), stages.size());
 
     for (auto * t : intermediates) ggml_set_output(t);
