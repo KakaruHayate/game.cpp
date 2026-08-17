@@ -216,6 +216,7 @@ int cmd_inspect(int argc, char ** argv) {
 namespace serv_proto {
 constexpr std::uint32_t MAGIC_INFERENCE = 0x53455256u;  // "VRES"
 constexpr std::uint32_t MAGIC_QUIT      = 0x54495155u;  // "UQIT"
+constexpr std::uint32_t MAGIC_BATCH     = 0x5441424Du;  // "MBAT" — batched inference
 
 #pragma pack(push, 1)
 struct RequestHeader {
@@ -230,6 +231,22 @@ struct RequestHeader {
 };
 #pragma pack(pop)
 static_assert(sizeof(RequestHeader) == 36, "RequestHeader must be 36 bytes");
+
+// Batch request header (same 36-byte frame, n_samples field repurposed as B).
+// Followed by B × (uint32 n_samples + float[n_samples] waveform) blocks.
+#pragma pack(push, 1)
+struct BatchRequestHeader {
+    std::uint32_t magic;
+    std::int32_t  language;
+    std::uint64_t seed;
+    std::int32_t  nsteps;
+    float         seg_threshold;
+    std::int32_t  seg_radius;
+    float         est_threshold;
+    std::uint32_t B;   // item count
+};
+#pragma pack(pop)
+static_assert(sizeof(BatchRequestHeader) == 36, "BatchRequestHeader must be 36 bytes");
 }  // namespace serv_proto
 
 // Read exactly n bytes from a binary stream; returns false on EOF/error.
@@ -313,7 +330,8 @@ int cmd_serve(int argc, char ** argv) {
             std::fprintf(stderr, "[serve] quit signal received\n");
             break;
         }
-        if (hdr.magic != serv_proto::MAGIC_INFERENCE) {
+        if (hdr.magic != serv_proto::MAGIC_INFERENCE &&
+            hdr.magic != serv_proto::MAGIC_BATCH) {
             err_msg = "bad magic in request header";
             std::printf("{\"type\":\"error\",\"message\":\"%s\"}\n",
                         json_escape(err_msg).c_str());
@@ -321,6 +339,85 @@ int cmd_serve(int argc, char ** argv) {
             std::fprintf(stderr, "[serve] %s\n", err_msg.c_str());
             break;
         }
+
+        // ---- batched inference (MAGIC_BATCH) ----
+        if (hdr.magic == serv_proto::MAGIC_BATCH) {
+            const std::uint32_t B = hdr.n_samples;   // repurposed as item count
+            if (B == 0 || B > 256) {
+                err_msg = "batch item count out of range";
+                std::printf("{\"type\":\"error\",\"message\":\"%s\"}\n",
+                            json_escape(err_msg).c_str());
+                std::fflush(stdout);
+                continue;
+            }
+            InferParams p;
+            p.language           = hdr.language;
+            p.seed               = hdr.seed;
+            p.d3pm_nsteps        = hdr.nsteps > 0 ? hdr.nsteps : 1;
+            p.boundary_threshold = hdr.seg_threshold;
+            p.boundary_radius    = hdr.seg_radius;
+            p.note_threshold     = hdr.est_threshold;
+
+            std::vector<BatchItem> items;
+            items.reserve(B);
+            std::vector<std::vector<float>> payloads(B);
+            bool truncated = false;
+            for (std::uint32_t bi = 0; bi < B; ++bi) {
+                std::uint32_t ns = 0;
+                if (!read_exact(std::cin, reinterpret_cast<char *>(&ns), sizeof(ns)) ||
+                    ns == 0 || ns > 100u * 1024u * 1024u) { truncated = true; break; }
+                payloads[bi].resize(ns);
+                if (!read_exact(std::cin, reinterpret_cast<char *>(payloads[bi].data()),
+                                ns * sizeof(float))) { truncated = true; break; }
+                items.push_back(BatchItem{ payloads[bi].data(), ns, hdr.language });
+            }
+            if (truncated) {
+                std::printf("{\"type\":\"error\",\"message\":\"%s\"}\n", "truncated batch payload");
+                std::fflush(stdout);
+                break;
+            }
+
+            BatchResult br;
+            try {
+                auto t0 = std::chrono::steady_clock::now();
+                br = model->infer_batch(items, p);
+                auto dt = std::chrono::duration<double>(
+                              std::chrono::steady_clock::now() - t0).count();
+                std::fprintf(stderr,
+                    "[serve] batch inferred %zu items in %.3fs\n", items.size(), dt);
+            } catch (const std::exception & e) {
+                std::printf("{\"type\":\"error\",\"message\":\"%s\"}\n",
+                            json_escape(e.what()).c_str());
+                std::fflush(stdout);
+                std::fprintf(stderr, "[serve] batch inference error: %s\n", e.what());
+                continue;
+            }
+
+            // Multi-item JSON: {"type":"notes_batch","items":[{count,notes},...]}
+            std::string out;
+            out.reserve(64 + br.items.size() * 32);
+            out += "{\"type\":\"notes_batch\",\"items\":[";
+            for (std::size_t bi = 0; bi < br.items.size(); ++bi) {
+                const auto & r = br.items[bi];
+                if (bi) out += ",";
+                out += "{\"count\":"; out += std::to_string(r.notes.size());
+                out += ",\"notes\":[";
+                for (std::size_t i = 0; i < r.notes.size(); ++i) {
+                    const auto & n = r.notes[i];
+                    if (i) out += ",";
+                    out += "{\"o\":" + std::to_string(n.offset_seconds) +
+                           ",\"d\":" + std::to_string(n.duration_seconds) +
+                           ",\"p\":" + std::to_string(n.pitch_midi) +
+                           ",\"v\":" + (n.voiced ? "1" : "0") + "}";
+                }
+                out += "]}";
+            }
+            out += "]}";
+            std::printf("%s\n", out.c_str());
+            std::fflush(stdout);
+            continue;
+        }
+
         if (hdr.n_samples == 0 || hdr.n_samples > 100u * 1024u * 1024u) {
             err_msg = "n_samples out of range";
             std::printf("{\"type\":\"error\",\"message\":\"%s\"}\n",
