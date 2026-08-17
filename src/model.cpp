@@ -480,6 +480,97 @@ void Model::Impl::run_segmenter_step(
 }
 
 // ============================================================================
+// Stage 2b — segmenter, batched (one D3PM step over a whole [B,T] batch)
+// ============================================================================
+
+void Model::Impl::run_segmenter_batch(
+    const float * x_seg_host, int T, int B,
+    const std::int32_t * noise_mod3,       // (T, B) flattened b-major: idx = b*T + t
+    float t_scalar, const int * language,  // language array length B
+    std::vector<float> & logits_out)       // (T, B) flattened b-major
+{
+    const int D = cfg.embedding_dim;
+
+    StageCtx s(backend, 512 * 1024 * 1024, 16384);
+
+    ggml_tensor * xseg        = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, D, T, B);
+    ggml_tensor * noise       = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T * B);
+    ggml_tensor * t_tensor    = ggml_new_tensor_3d(s.ctx, GGML_TYPE_F32, 1, 1, 1);
+    ggml_tensor * lang        = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, B);
+    ggml_tensor * positions   = ggml_new_tensor_1d(s.ctx, GGML_TYPE_I32, T);
+    for (auto * t : {xseg, noise, t_tensor, lang, positions}) ggml_set_input(t);
+
+    // ---- custom front (batch-safe embedding injections) ----
+    ggml_tensor * noise_emb = internal::ops::embedding(s.ctx, segmenter_w.w_noise_embedding, noise);
+    // embedding(weight(D,V), idx(T*B)) -> (D, T*B); reshape to (D,T,B).
+    noise_emb = ggml_reshape_3d(s.ctx, ggml_cont(s.ctx, noise_emb), D, T, B);
+    ggml_tensor * x = ggml_add(s.ctx, xseg, noise_emb);
+
+    if (segmenter_w.w_time_0 && t_tensor) {
+        ggml_tensor * h = internal::ops::linear(s.ctx, t_tensor, segmenter_w.w_time_0, segmenter_w.b_time_0);
+        h = ggml_gelu(s.ctx, h);
+        h = internal::ops::linear(s.ctx, h, segmenter_w.w_time_2, segmenter_w.b_time_2);
+        // (D,1,1) -> broadcast add over (D,T,B)
+        x = ggml_add(s.ctx, x, h);
+    }
+
+    if (segmenter_w.w_lang_embedding && lang) {
+        ggml_tensor * le = internal::ops::embedding(s.ctx, segmenter_w.w_lang_embedding, lang);
+        // (D,B) flat layout d + b*D already matches (D,1,B) ordering — reshape
+        // (not view) so T becomes a no-op broadcast dim.
+        le = ggml_reshape_3d(s.ctx, ggml_cont(s.ctx, le), D, 1, B);
+        x = ggml_add(s.ctx, x, le);
+    }
+
+    x = internal::ops::linear(s.ctx, x, segmenter_w.w_input_proj, segmenter_w.b_input_proj);
+
+    // ---- full block stack (+ latent tap if configured) ----
+    ggml_tensor * latent_tap = nullptr;
+    for (int i = 0; i < cfg.segmenter.num_layers; ++i) {
+        x = internal::ops::ebf_block(s.ctx, x, segmenter_w.layers[i], positions,
+                                     cfg.segmenter.num_heads, cfg.segmenter.head_dim);
+        if (cfg.segmenter.return_latent && i == cfg.segmenter.latent_layer_idx - 1) {
+            latent_tap = x;
+        }
+    }
+
+    ggml_tensor * latent = nullptr;
+    if (cfg.segmenter.return_latent && latent_tap) {
+        ggml_tensor * lt = latent_tap;
+        if (segmenter_w.w_latent_norm) lt = internal::ops::rms_norm(s.ctx, lt, segmenter_w.w_latent_norm);
+        latent = ggml_cont(s.ctx, internal::ops::linear(s.ctx, lt, segmenter_w.w_latent_proj, segmenter_w.b_latent_proj));
+        ggml_set_output(latent);
+        ggml_build_forward_expand(s.graph, latent);
+    }
+
+    // ---- head ----
+    if (segmenter_w.w_output_norm) x = internal::ops::rms_norm(s.ctx, x, segmenter_w.w_output_norm);
+    ggml_tensor * logitsT = internal::ops::linear(s.ctx, x, segmenter_w.w_output_proj, segmenter_w.b_output_proj);
+    logitsT = ggml_cont(s.ctx, logitsT);                      // (1, T, B) after proj(D->1)... linear gives (1,T,B)
+    ggml_set_output(logitsT);
+    ggml_build_forward_expand(s.graph, logitsT);
+    s.dump_backend_support("segmenter/batch");
+    s.alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!ggml_gallocr_alloc_graph(s.alloc, s.graph)) throw Error("alloc failed (segmenter/batch)");
+
+    ggml_backend_tensor_set(xseg,     x_seg_host, 0, ggml_nbytes(xseg));
+    ggml_backend_tensor_set(noise,    noise_mod3, 0, T * B * sizeof(std::int32_t));
+    ggml_backend_tensor_set(t_tensor, &t_scalar,  0, sizeof(float));
+    ggml_backend_tensor_set(lang,     language,   0, B * sizeof(std::int32_t));
+    std::vector<std::int32_t> pos(T);
+    for (int i = 0; i < T; ++i) pos[i] = i;
+    ggml_backend_tensor_set(positions, pos.data(), 0, pos.size() * sizeof(std::int32_t));
+
+    s.compute();
+
+    // logitsT is (1, T, B); flatten to (T, B) b-major.
+    logits_out.resize(ggml_nelements(logitsT));
+    ggml_backend_tensor_get(logitsT, logits_out.data(), 0, logits_out.size() * sizeof(float));
+    // logitsT ne = (1, T, B): element index = b*(1*T) + t*1 + 0 → b*T + t. Layout is
+    // exactly what we want: plane b at b*T, and within a plane t ascends.  Good.
+}
+
+// ============================================================================
 // Stage 3 — estimator (regions → pool_logits)
 // ============================================================================
 
@@ -825,6 +916,7 @@ std::vector<InferResult> Model::Impl::infer_batch_impl(
         if (same_t && !items.empty() && T > 0) {
             const int D_mel = cfg.in_dim;
             const std::size_t B = items.size();
+            const int D = cfg.embedding_dim;
             std::vector<float> mel_batch(D_mel * T * B, 0.0f);
             std::vector<std::uint8_t> mask(T * B, 1);
             for (std::size_t b = 0; b < B; ++b) {
@@ -840,16 +932,103 @@ std::vector<InferResult> Model::Impl::infer_batch_impl(
                 run_encoder_batch(mel_batch.data(), T, static_cast<int>(B),
                                   mask.data(), x_seg_batch, x_est_batch);
             }
+
+                        std::vector<float> ts = params.d3pm_ts.empty()
+                ? default_d3pm_schedule(params.d3pm_t0, params.d3pm_nsteps)
+                : params.d3pm_ts;
+
+            // Per-sample D3PM state, batched as (T,B) host arrays (b-major).
+            std::vector<std::uint8_t> known(T * B, 0);
+            std::vector<std::uint8_t> boundaries(T * B, 0);
+            std::vector<std::int32_t> noise_mod(T * B);
+            std::vector<float> probs(T * B);
+            std::vector<float> logits;
+            std::vector<int> languages(static_cast<std::size_t>(B), params.language);
+            for (std::size_t b = 0; b < B; ++b) languages[b] = items[b].language;
+
+            std::vector<std::unique_ptr<internal::MT19937Rng>> rngs;
+            rngs.reserve(B);
+            for (std::size_t b = 0; b < B; ++b)
+                rngs.push_back(std::make_unique<internal::MT19937Rng>(given_seeds[b]));
+
+            for (float ti : ts) {
+                const float pv = d3pm_time_schedule(ti);
+                std::vector<std::uint8_t> next(T * B);
+                for (std::size_t b = 0; b < B; ++b) {
+                    std::uint8_t * bd = boundaries.data() + b * T;
+                    std::uint8_t * kn = known.data() + b * T;
+                    std::uint8_t * nx = next.data() + b * T;
+                    remove_mutable_boundaries(bd, kn, T, pv, *rngs[b], nx);
+                }
+                boundaries = std::move(next);
+                for (std::size_t b = 0; b < B; ++b) {
+                    const std::uint8_t * bd = boundaries.data() + b * T;
+                    const std::uint8_t * ms = mask.data() + b * T;
+                    auto regions = game_ggml::boundaries_to_regions(bd, ms, T);
+                    for (int t = 0; t < T; ++t)
+                        noise_mod[b * T + t] = regions[t] % cfg.region_cycle_len;
+                }
+                // one batched segmenter call for the WHOLE batch
+                {
+                    StageProfiler prof; auto _ = prof.scope_segmenter();
+                    run_segmenter_batch(x_seg_batch.data(), T, static_cast<int>(B),
+                                        noise_mod.data(), ti, languages.data(), logits);
+                }
+                // sigmoid + decode_soft_boundaries per sample
+                for (std::size_t b = 0; b < B; ++b) {
+                    const float * lg = logits.data() + b * T;
+                    float * pr = probs.data() + b * T;
+                    for (int t = 0; t < T; ++t) pr[t] = sigmoid(lg[t]);
+                    std::uint8_t * bd = boundaries.data() + b * T;
+                    std::uint8_t * kn = known.data() + b * T;
+                    std::uint8_t * ms = mask.data() + b * T;
+                    auto nb = game_ggml::decode_soft_boundaries(pr, T, kn, ms,
+                        params.boundary_threshold, params.boundary_radius);
+                    std::memcpy(bd, nb.data(), T);
+                }
+            }
+
+            // ---- per-sample final decode + estimator (not yet fused) ----
             for (std::size_t b = 0; b < B; ++b) {
-                internal::MT19937Rng rng(given_seeds[b]);
-                InferParams p = params;
-                // DBCache is per-sample state configured inside
-                // infer_from_latent (which resets seg_cache each call), so the
-                // batched path can safely use the caller's cache preference.
-                p.seed = 0;
-                const float * xs = x_seg_batch.data() + b * (cfg.embedding_dim * T);
-                const float * xe = x_est_batch.data() + b * (cfg.embedding_dim * T);
-                out.push_back(infer_from_latent(xs, xe, T, p, rng));
+                const std::uint8_t * bd = boundaries.data() + b * T;
+                const std::uint8_t * ms = mask.data() + b * T;
+                auto regions = game_ggml::boundaries_to_regions(bd, ms, T);
+                int N = 0;
+                for (int t = 0; t < T; ++t) N = std::max<int>(N, regions[t]);
+
+                InferResult res;
+                res.num_frames = T;
+                res.db_cache_hits   = 0;
+                res.db_cache_misses = 0;
+                if (N > 0) {
+                    std::vector<float> pool_logits;
+                    const float * xe = x_est_batch.data() + b * (D * T);
+                    run_estimator(xe, T, regions.data(), N, pool_logits);
+                    const int bins = cfg.estimator_out_dim;
+                    std::vector<float> pool_probs(pool_logits.size());
+                    for (std::size_t i = 0; i < pool_logits.size(); ++i)
+                        pool_probs[i] = sigmoid(pool_logits[i]);
+                    auto dec = game_ggml::decode_gaussian_blurred_probs(
+                        pool_probs.data(), static_cast<std::size_t>(N), static_cast<std::size_t>(bins),
+                        cfg.inference.midi_min, cfg.inference.midi_max,
+                        cfg.inference.midi_std * 3.0f,
+                        params.note_threshold);
+                    const float timestep = cfg.inference.timestep();
+                    std::vector<int> dur_frames(N + 1, 0);
+                    for (int t = 0; t < T; ++t)
+                        if (regions[t] > 0 && regions[t] <= N) ++dur_frames[regions[t]];
+                    float offset = 0.0f;
+                    for (int n_idx = 0; n_idx < N; ++n_idx) {
+                        Note nt;
+                        nt.offset_seconds   = offset;
+                        nt.duration_seconds = dur_frames[n_idx + 1] * timestep;
+                        nt.pitch_midi       = dec.values[n_idx];
+                        nt.voiced           = dec.presence[n_idx] != 0;
+                        res.notes.push_back(nt);
+                        offset += nt.duration_seconds;
+                    }
+                }
+                out.push_back(std::move(res));
             }
             return out;
         }

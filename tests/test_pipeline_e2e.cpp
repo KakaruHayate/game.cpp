@@ -123,8 +123,12 @@ TEST(Pipeline, BatchFusedEqualsSequential) {
     p.d3pm_nsteps = 8;
     // Per-item seed policy of infer_batch: base 42 -> items use 42, 43, …
     p.seed = 42;
+    // Batch fused path runs the full D3PM loop without the CPU DBCache
+    // shortcut (same as infer.py cache_threshold=0), so sequential reference
+    // must also disable it for a bit-for-bit comparison.
+    p.db_cache_threshold = 0.0f;
 
-    // sequential reference (same per-item seeds as the batch path)
+    // sequential reference (same per-item seeds + cache-off as the batch path)
     auto s0 = model.infer(wa1.samples.data(), wa1.samples.size(), p);  // seed 42
     p.seed = 43;
     auto s1 = model.infer(wa2.samples.data(), wa2.samples.size(), p);  // seed 43
