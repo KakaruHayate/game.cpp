@@ -1,5 +1,7 @@
 # GAME ggml backend
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/KakaruHayate/game.cpp)
+
 > **Languages:** [English](README.md) | [中文](README_CN.md)
 
 Native C++ inference for the [GAME](https://github.com/openvpi/GAME) singing-voice-to-MIDI model, built on
