@@ -89,7 +89,12 @@ FetchContent_Declare(
     ggml
     GIT_REPOSITORY https://github.com/ggerganov/ggml.git
     GIT_TAG        v0.20.2
-    GIT_SHALLOW    TRUE
+    # Full clone (not shallow): with FETCHCONTENT_UPDATES_DISCONNECTED=ON the
+    # populate step is forbidden to fetch, so a shallow clone would only carry
+    # the default branch HEAD — a tag pinned a few commits behind main (e.g.
+    # v0.20.2) then fails with "ref not present locally".  A full clone keeps
+    # every tag reachable and is populated once per build dir.
+    GIT_SHALLOW    FALSE
 )
 
 FetchContent_GetProperties(ggml)
