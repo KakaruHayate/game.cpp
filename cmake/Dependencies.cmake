@@ -87,16 +87,16 @@ endif()
 # ---------------------------------------------------------------------------
 FetchContent_Declare(
     ggml
-    GIT_REPOSITORY https://github.com/ggerganov/ggml.git
-    # Pin by commit SHA (8c63e70 = v0.20.2, "bump version to 0.20.2").
-    # Pinning by tag name breaks with FETCHCONTENT_UPDATES_DISCONNECTED=ON:
-    # the populate gitupdate step resolves the tag locally, but a fresh clone
-    # does not carry the tag ref (shallow clone never does; a full clone only
-    # does for tags on the default branch), so it aborts with "requested git
-    # ref ... not present locally".  A commit SHA is always resolvable once
-    # the object exists in the clone.
-    GIT_TAG        8c63e70982c95ceb862e3a1073a2c1beef75d60a
-    GIT_SHALLOW    FALSE
+    # URL archive instead of git: with FETCHCONTENT_UPDATES_DISCONNECTED=ON
+    # the populate step must resolve the pinned ref locally, which a fresh
+    # clone cannot — a shallow clone only carries the default-branch HEAD,
+    # and the v0.20.2 tag/commit is not on it, so populate aborts with
+    # "requested git ref ... not present locally".  A URL archive has no git
+    # semantics: populate is a plain download + extract and works offline.
+    # (patches are still applied with `git apply`, which needs no .git.)
+    URL      https://github.com/ggerganov/ggml/archive/refs/tags/v0.20.2.tar.gz
+    URL_HASH SHA256=55dfd1ea4e6b6b3e25d9411f9525eb4df1c796c03a244e2321388b30f189cd3d
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_GetProperties(ggml)
