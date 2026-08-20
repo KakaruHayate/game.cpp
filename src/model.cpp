@@ -271,6 +271,18 @@ void Model::Impl::run_segmenter_step(
 
         logits_out.resize(T);
         ggml_backend_tensor_get(seg_stage.outs[0], logits_out.data(), 0, logits_out.size() * sizeof(float));
+        if (std::getenv("GAME_GGML_DUMP_LOGITS")) {
+            float mn = logits_out[0], mx = logits_out[0], sum = 0.0f;
+            int nneg = 0;
+            for (int i = 0; i < T; ++i) {
+                mn = std::min(mn, logits_out[i]);
+                mx = std::max(mx, logits_out[i]);
+                sum += logits_out[i];
+                if (logits_out[i] < 0.0f) ++nneg;
+            }
+            std::fprintf(stderr, "[LOGITS] fused step t=%.4f n=%d min=%.4f max=%.4f mean=%.4f nneg=%d\n",
+                         t_scalar, T, mn, mx, sum / T, nneg);
+        }
         return;
     }
 
@@ -788,24 +800,14 @@ InferResult Model::Impl::infer_with_rng(
     // with a single step there is nothing to cache, so the fused single-graph
     // path stays active (cache.enabled==false) even when a threshold is set
     // — that avoids paying the 3-stage split cost for --nsteps 1.
-    // EP-aware default: on CPU the split-cache path wins big (measured -45%
-    // at nsteps=8); on GPU backends its per-step host round-trips regress
-    // quantized weights (measured +20% on Vulkan+Q8), so default it off
-    // unless the user picks a threshold explicitly.
+    // Default 0.25 on every backend: the DBCache decision metric and the
+    // middle reconstruction now run fully on-device (1-float readback), so
+    // GPU backends no longer pay the D×T host round-trip that regressed
+    // quantized weights (+20% measured on Vulkan+Q8 with the old host-side
+    // path).  Verified on Vulkan/RTX 2070: device-side split path matches
+    // CPU note output exactly.
     float thr = params.db_cache_threshold;
-    if (thr < 0.0f) {
-        const bool gpu = [this] {
-            const char * bn = internal::backend_name(backend);
-            if (!bn) return false;
-            std::string s(bn);
-            std::transform(s.begin(), s.end(), s.begin(),
-                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            return s.find("vulkan") != std::string::npos ||
-                   s.find("cuda")   != std::string::npos ||
-                   s.find("metal")  != std::string::npos;
-        }();
-        thr = gpu ? 0.0f : 0.25f;
-    }
+    if (thr < 0.0f) thr = 0.25f;
     seg_cache.enabled   = thr > 0.0f && ts.size() > 1;
     seg_cache.threshold = thr;
     seg_cache.fn_blocks = params.db_cache_fn_blocks;

@@ -273,7 +273,7 @@ int main() {
     params.language = 4;   // from lang_map: { "zh": 4 }
     params.seed     = 42;
     // DBCache (segmenter cross-step reuse; affects nsteps>1 only).
-    // -1 = auto (CPU 0.25, GPU off); 0 = off; >0 = explicit threshold.
+    // -1 = auto (0.25 on all backends); 0 = off; >0 = explicit threshold.
     params.db_cache_threshold = 0.25f;
     params.db_cache_fn_blocks = 1;
     params.db_cache_warmup    = 1;
