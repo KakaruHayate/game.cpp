@@ -309,9 +309,11 @@ ggml_tensor * apply_ffn_block(ggml_context * ctx, ggml_tensor * x,
     ggml_tensor * w_ln2, ggml_tensor * b_ln2,
     ggml_tensor * w_lay_scale)
 {
+    // F-2: lay_scale is folded into the ln2 linear at load time
+    // (tensor_utils.cpp), so w_lay_scale is intentionally unused here.
+    (void)w_lay_scale;
     ggml_tensor * h = rms_norm(ctx, x, w_norm);
     h = glu_ffn(ctx, h, w_ln1, b_ln1, w_ln2, b_ln2);
-    if (w_lay_scale) h = layer_scale(ctx, h, w_lay_scale);
     // JEBF uses `+ x` (not `* 0.5 + x`) unlike the single-stream EBF.
     return ggml_add(ctx, x, h);
 }
@@ -340,13 +342,13 @@ JoinResult jebf_block(
     }
 
     // --- PJAC ---
+    // F-2: lay_scale_jpac_{x,pool} folded into merge_linear_{x,pool} at load
+    // time, so the residual uses att.* directly.
     auto att = pjac(ctx, pool, x, W.pjac,
         global_positions, region_indices, attn_mask_fp16,
         num_heads, head_dim, theta);
-    ggml_tensor * x_att    = W.w_lay_scale_jpac_x    ? layer_scale(ctx, att.x,    W.w_lay_scale_jpac_x)    : att.x;
-    ggml_tensor * pool_att = W.w_lay_scale_jpac_pool ? layer_scale(ctx, att.pool, W.w_lay_scale_jpac_pool) : att.pool;
-    x    = ggml_add(ctx, x,    x_att);
-    pool = ggml_add(ctx, pool, pool_att);
+    x    = ggml_add(ctx, x,    att.x);
+    pool = ggml_add(ctx, pool, att.pool);
 
     // --- FFN2 per stream ---
     if (W.has_ffn2) {

@@ -50,22 +50,82 @@ bool is_dwconv_weight(const char * name) {
 // expected to match the unfolded graph to ~1e-7, not bit-exactly.
 // ---------------------------------------------------------------------------
 
-// Returns the base prefix of an EBF block given a tensor name, or nullptr if
-// the name is not an encoder/segmenter EBF lay_scale ("lay_scale{1,2,3}.scale").
-const char * ebf_lay_scale_base(const char * name, int * which_out) {
-    const char * p = std::strstr(name, ".lay_scale");
-    if (!p) return nullptr;
-    // p points at ".lay_scale"; suffix must be exactly "lay_scaleN.scale".
-    const char * digit = p + std::strlen(".lay_scale");
-    if (!std::isdigit(static_cast<unsigned char>(*digit))) return nullptr;
-    const int which = *digit - '0';
-    if (which < 1 || which > 3) return nullptr;
-    if (std::strcmp(digit + 1, ".scale") != 0) return nullptr;
-    // Reject estimator names ("lay_scale_ffn1_x.scale" etc. — those end in
-    // "_x.scale"/"_pool.scale" and carry a letter right after the digit).
-    if (digit[1] == '_') return nullptr;
-    *which_out = which;
-    return name;  // base = everything before ".lay_scaleN.scale"
+// ---------------------------------------------------------------------------
+// F-2: layer-scale folding (load-time, schema-preserving) — covers both the
+// single-stream EBF blocks (encoder/segmenter) and the joint EBF (estimator):
+//
+//   * single-stream EBF residual  x + 0.5·lay_scale(branch)     → mult 0.5
+//   * joint EBF residual          x + lay_scale(branch)         → mult 1.0
+//
+// lay_scale is a per-channel multiply, so it folds into the branch's
+// producing linear at load time (see F-2 note above).  `parse_lay_scale_name`
+// maps a GGUF lay_scale tensor name to its producing linear's weight/bias
+// tensor names (relative to the block base, with leading '.') and the
+// extra multiplier.  Returns false for non-lay_scale names.
+// ---------------------------------------------------------------------------
+struct FoldTarget {
+    std::string w_suffix;   // e.g. ".ffn1.ln2.weight" (base + suffix = full name)
+    std::string b_suffix;
+    float mult;             // extra factor applied to the lay_scale values
+};
+
+bool parse_lay_scale_name(const std::string & name, std::string & base_out,
+                          FoldTarget & t_out) {
+    // ---- Single-stream EBF: {base}.lay_scale{1,2,3}.scale ----
+    const std::string ebf = ".lay_scale";
+    const std::size_t ep = name.rfind(ebf);
+    if (ep != std::string::npos) {
+        const std::string tail = name.substr(ep + ebf.size());  // "N.scale"
+        if (tail.size() == 7 && tail[1] == '.' &&
+            tail.compare(1, std::string::npos, ".scale") == 0) {
+            const int which = tail[0] - '0';
+            if (which >= 1 && which <= 3) {
+                base_out = name.substr(0, ep);
+                if (which == 1) {
+                    t_out.w_suffix = ".ffn1.ln2.weight";  t_out.b_suffix = ".ffn1.ln2.bias";
+                } else if (which == 2) {
+                    t_out.w_suffix = ".attn.merge_linear.weight"; t_out.b_suffix = ".attn.merge_linear.bias";
+                } else {
+                    t_out.w_suffix = ".ffn2.ln2.weight";  t_out.b_suffix = ".ffn2.ln2.bias";
+                }
+                t_out.mult = (which == 2) ? 1.0f : 0.5f;
+                return true;
+            }
+        }
+    }
+
+    // ---- Joint EBF (estimator): {base}.lay_scale_{kind}.scale ----
+    //   kind ∈ {ffn1_x, ffn1_pool, ffn2_x, ffn2_pool, jpac_x, jpac_pool}
+    const std::string jp = ".lay_scale_";
+    const std::size_t jpos = name.rfind(jp);
+    if (jpos != std::string::npos) {
+        const std::string kind = name.substr(jpos + jp.size());  // e.g. "ffn1_x.scale"
+        if (kind.size() >= 7 && kind.compare(kind.size() - 6, 6, ".scale") == 0) {
+            const std::string k = kind.substr(0, kind.size() - 6);  // "ffn1_x"
+            base_out = name.substr(0, jpos);
+            if (k.size() >= 6 && k.compare(0, 3, "ffn") == 0 &&
+                (k[3] == '1' || k[3] == '2') && k[4] == '_') {
+                // k = "ffn{1,2}_{x,pool}"
+                const std::string stream = k.substr(5);
+                if (stream == "x" || stream == "pool") {
+                    t_out.w_suffix = ".ffn" + k.substr(3, 1) + "_" + stream + ".ln2.weight";
+                    t_out.b_suffix = ".ffn" + k.substr(3, 1) + "_" + stream + ".ln2.bias";
+                    t_out.mult = 1.0f;
+                    return true;
+                }
+            }
+            if (k.size() >= 6 && k.compare(0, 4, "jpac") == 0 && k[4] == '_') {
+                const std::string stream = k.substr(5);
+                if (stream == "x" || stream == "pool") {
+                    t_out.w_suffix = ".attn.merge_linear_" + stream + ".weight";
+                    t_out.b_suffix = ".attn.merge_linear_" + stream + ".bias";
+                    t_out.mult = 1.0f;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 // Multiply the rows of a weight tensor (ne[0] = in dim, contiguous) by a
@@ -230,12 +290,12 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
     std::map<std::string, std::vector<std::uint8_t>>  ls_cache;
     {
         std::vector<std::uint8_t> ls_scratch;
-        constexpr std::size_t kLsSuffixLen = 17;  // ".lay_scaleN.scale"
         const int64_t n_tensors = gguf_get_n_tensors(gctx);
         for (int64_t i = 0; i < n_tensors; ++i) {
             const char * name = gguf_get_tensor_name(gctx, i);
-            int which = 0;
-            if (!ebf_lay_scale_base(name, &which)) continue;
+            std::string base;
+            FoldTarget tgt;
+            if (!parse_lay_scale_name(name, base, tgt)) continue;
             ggml_tensor * t = ggml_get_tensor(ctx, name);
             if (!t) continue;
 
@@ -260,34 +320,26 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
                                 ggml_type_name(t->type) + "' on '" + name + "'");
             }
 
-            // factor = s for the PAC branch (which==2), 0.5·s for FFN branches.
+            // factor = mult · s  (0.5 for single-stream FFN branches, 1.0 for
+            // PAC/PJAC and joint-FFN branches).
             std::vector<float> factor = s;
-            if (which != 2) {
-                for (auto & v : factor) v *= 0.5f;
+            if (tgt.mult != 1.0f) {
+                for (auto & v : factor) v *= tgt.mult;
             }
 
-            // Producing linear of each branch, same block prefix.  The base
-            // (block path) excludes the trailing '.', so re-add it.
-            std::string base(name);
-            base.resize(base.size() - kLsSuffixLen);
-            const char * w_key = nullptr;
-            const char * b_key = nullptr;
-            if (which == 1)      { w_key = ".ffn1.ln2.weight"; b_key = ".ffn1.ln2.bias"; }
-            else if (which == 2) { w_key = ".attn.merge_linear.weight"; b_key = ".attn.merge_linear.bias"; }
-            else                 { w_key = ".ffn2.ln2.weight"; b_key = ".ffn2.ln2.bias"; }
-            const std::string w_name = base + w_key;
+            const std::string w_name = base + tgt.w_suffix;
             if (!ggml_get_tensor(ctx, w_name.c_str())) {
                 throw GgufError("fold: missing target '" + w_name + "' for '" + name + "'");
             }
             fold_weights.emplace(w_name, factor);
-            const std::string b_name = base + b_key;
+            const std::string b_name = base + tgt.b_suffix;
             if (ggml_get_tensor(ctx, b_name.c_str())) {
                 fold_biases.emplace(b_name, factor);
             }
             ls_cache.emplace(name, ls_scratch);
         }
         if (!fold_weights.empty()) {
-            std::fprintf(stderr, "[FOLD] folded %zu EBF lay_scale(s) into producing linears\n",
+            std::fprintf(stderr, "[FOLD] folded %zu lay_scale(s) into producing linears\n",
                          fold_weights.size());
         }
     }
