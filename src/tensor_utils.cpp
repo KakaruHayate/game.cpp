@@ -29,6 +29,17 @@ bool is_dwconv_weight(const char * name) {
            std::strstr(name, ".weight") != nullptr;
 }
 
+// F-1: GLU FFN first linear ("ln1").  The [in, 2L] weight and [2L] bias are
+// split at load time into two [in, L] / [L] halves so the graph can run two
+// mul_mats that produce contiguous outputs, eliminating the two cont copies
+// per GLU FFN (see glu_ffn_split in ops_ffn.cpp).
+bool is_glu_ln1_weight(const char * name) {
+    return std::strstr(name, ".ln1.weight") != nullptr && !is_dwconv_weight(name);
+}
+bool is_glu_ln1_bias(const char * name) {
+    return std::strstr(name, ".ln1.bias") != nullptr;
+}
+
 // ---------------------------------------------------------------------------
 // F-2: EBF layer-scale folding (load-time, schema-preserving).
 //
@@ -220,36 +231,54 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
     }
 
     // --- 1b. Create persistent F32 copies of F16 depthwise-conv weights
-    //          (see is_dwconv_weight above).  The gguf-init context is sized
-    //          exactly for its tensor table, so the copies get their own
-    //          small context + backend buffer.
+    //          (see is_dwconv_weight above), plus F-1 GLU ln1 split halves
+    //          (a/b).  The gguf-init context is sized exactly for its tensor
+    //          table, so these copies get their own context + backend buffer.
     std::map<std::string, ggml_tensor *> dw_f32;   // original name -> F32 copy
+    std::map<std::string, std::pair<ggml_tensor *, ggml_tensor *>> glu_ab;       // ln1 weight -> {a, b}
+    std::map<std::string, std::pair<ggml_tensor *, ggml_tensor *>> glu_ab_bias;  // ln1 bias  -> {a, b}
     ggml_context * ctx2 = nullptr;
     ggml_backend_buffer_t buf2 = nullptr;
     {
         ggml_init_params ip{};
-        ip.mem_size   = 64 * 1024;
+        ip.mem_size   = 512 * 1024;   // metadata for dwconv copies + GLU splits
         ip.mem_buffer = nullptr;
         ip.no_alloc   = true;
         ctx2 = ggml_init(ip);
-        if (!ctx2) throw GgufError("failed to create dwconv F32 copy context");
+        if (!ctx2) throw GgufError("failed to create weight-copy context");
 
         const int64_t n_tensors = gguf_get_n_tensors(gctx);
         for (int64_t i = 0; i < n_tensors; ++i) {
             const char * name = gguf_get_tensor_name(gctx, i);
             ggml_tensor * t = ggml_get_tensor(ctx, name);
-            if (!t || t->type != GGML_TYPE_F16 || !is_dwconv_weight(name)) continue;
-            ggml_tensor * w32 = ggml_new_tensor_3d(ctx2, GGML_TYPE_F32,
-                t->ne[0], t->ne[1], t->ne[2]);
-            dw_f32.emplace(name, w32);
+            if (!t) continue;
+            if (t->type == GGML_TYPE_F16 && is_dwconv_weight(name)) {
+                ggml_tensor * w32 = ggml_new_tensor_3d(ctx2, GGML_TYPE_F32,
+                    t->ne[0], t->ne[1], t->ne[2]);
+                dw_f32.emplace(name, w32);
+            } else if (is_glu_ln1_weight(name) &&
+                       (t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_F16)) {
+                // w_ln1 ne = [in, 2L] (column-major, out dim contiguous) ->
+                // a = first L out-columns, b = last L out-columns.
+                const int64_t L = t->ne[1] / 2;
+                ggml_tensor * a = ggml_new_tensor_2d(ctx2, GGML_TYPE_F32, t->ne[0], L);
+                ggml_tensor * b = ggml_new_tensor_2d(ctx2, GGML_TYPE_F32, t->ne[0], L);
+                glu_ab.emplace(name, std::make_pair(a, b));
+            } else if (is_glu_ln1_bias(name) &&
+                       (t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_F16)) {
+                const int64_t L = t->ne[0] / 2;
+                ggml_tensor * a = ggml_new_tensor_1d(ctx2, GGML_TYPE_F32, L);
+                ggml_tensor * b = ggml_new_tensor_1d(ctx2, GGML_TYPE_F32, L);
+                glu_ab_bias.emplace(name, std::make_pair(a, b));
+            }
         }
-        if (!dw_f32.empty()) {
+        if (!dw_f32.empty() || !glu_ab.empty() || !glu_ab_bias.empty()) {
             buf2 = ggml_backend_alloc_ctx_tensors(ctx2, backend);
             if (!buf2) {
                 ggml_free(ctx2);
                 gguf_free(gctx);
                 ggml_free(ctx);
-                throw GgufError("failed to allocate dwconv F32 copy buffer");
+                throw GgufError("failed to allocate weight-copy buffer");
             }
         }
     }
@@ -385,6 +414,56 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
             if (fb != fold_biases.end()) fold_linear_bias(t, scratch, fb->second);
             const auto lsc = ls_cache.find(name);
             if (lsc != ls_cache.end()) scratch = lsc->second;  // reuse cached payload
+        }
+
+        // F-1: split GLU ln1 weights/biases into a/b F32 halves.  The
+        // original tensor is still uploaded (bind code references it), but
+        // the graph uses the contiguous .a/.b halves (two mul_mats, no cont).
+        {
+            const auto gw = glu_ab.find(name);
+            if (gw != glu_ab.end()) {
+                const int64_t D_in = t->ne[0];
+                const int64_t L    = t->ne[1] / 2;
+                std::vector<float> half(static_cast<std::size_t>(D_in) * L);
+                auto fill_half = [&](ggml_tensor * dst, int64_t col0) {
+                    if (t->type == GGML_TYPE_F32) {
+                        const float * src = reinterpret_cast<const float *>(scratch.data());
+                        for (int64_t o = 0; o < L; ++o)
+                            std::memcpy(half.data() + o * D_in, src + (col0 + o) * D_in,
+                                        static_cast<std::size_t>(D_in) * sizeof(float));
+                    } else {  // F16
+                        const ggml_fp16_t * src = reinterpret_cast<const ggml_fp16_t *>(scratch.data());
+                        for (int64_t o = 0; o < L; ++o)
+                            ggml_fp16_to_fp32_row(src + (col0 + o) * D_in,
+                                                  half.data() + o * D_in, D_in);
+                    }
+                    ggml_backend_tensor_set(dst, half.data(), 0, half.size() * sizeof(float));
+                };
+                fill_half(gw->second.first,  0);
+                fill_half(gw->second.second, L);
+                out.tensors_.emplace(std::string(name) + ".a", gw->second.first);
+                out.tensors_.emplace(std::string(name) + ".b", gw->second.second);
+            }
+            const auto gb = glu_ab_bias.find(name);
+            if (gb != glu_ab_bias.end()) {
+                const int64_t L = t->ne[0] / 2;
+                std::vector<float> half(static_cast<std::size_t>(L));
+                auto fill_half_b = [&](ggml_tensor * dst, int64_t i0) {
+                    if (t->type == GGML_TYPE_F32) {
+                        const float * src = reinterpret_cast<const float *>(scratch.data());
+                        for (int64_t i = 0; i < L; ++i) half[static_cast<std::size_t>(i)] = src[i0 + i];
+                    } else {  // F16
+                        const ggml_fp16_t * src = reinterpret_cast<const ggml_fp16_t *>(scratch.data());
+                        for (int64_t i = 0; i < L; ++i)
+                            half[static_cast<std::size_t>(i)] = ggml_fp16_to_fp32(src[i0 + i]);
+                    }
+                    ggml_backend_tensor_set(dst, half.data(), 0, half.size() * sizeof(float));
+                };
+                fill_half_b(gb->second.first,  0);
+                fill_half_b(gb->second.second, L);
+                out.tensors_.emplace(std::string(name) + ".a", gb->second.first);
+                out.tensors_.emplace(std::string(name) + ".b", gb->second.second);
+            }
         }
 
         // F16 depthwise-conv weights: store the persistent F32 copy instead.

@@ -31,6 +31,10 @@ static ops::EBFBlockWeights bind_ebf_layer(
         B.w_norm1    = W.get(p + "norm1.weight");
         B.w_ffn1_ln1 = W.get(p + "ffn1.ln1.weight");
         B.b_ffn1_ln1 = W.get(p + "ffn1.ln1.bias");
+        B.w_ffn1_ln1_a = W.try_get(p + "ffn1.ln1.weight.a");   // F-1 split halves
+        B.b_ffn1_ln1_a = W.try_get(p + "ffn1.ln1.bias.a");
+        B.w_ffn1_ln1_b = W.try_get(p + "ffn1.ln1.weight.b");
+        B.b_ffn1_ln1_b = W.try_get(p + "ffn1.ln1.bias.b");
         B.w_ffn1_ln2 = W.get(p + "ffn1.ln2.weight");
         B.b_ffn1_ln2 = W.get(p + "ffn1.ln2.bias");
         if (cfg.use_ls) B.w_lay_scale1 = W.get(p + "lay_scale1.scale");
@@ -39,6 +43,10 @@ static ops::EBFBlockWeights bind_ebf_layer(
         B.w_norm2    = W.get(p + "norm2.weight");
         B.w_ffn2_ln1 = W.get(p + "ffn2.ln1.weight");
         B.b_ffn2_ln1 = W.get(p + "ffn2.ln1.bias");
+        B.w_ffn2_ln1_a = W.try_get(p + "ffn2.ln1.weight.a");   // F-1 split halves
+        B.b_ffn2_ln1_a = W.try_get(p + "ffn2.ln1.bias.a");
+        B.w_ffn2_ln1_b = W.try_get(p + "ffn2.ln1.weight.b");
+        B.b_ffn2_ln1_b = W.try_get(p + "ffn2.ln1.bias.b");
         B.w_ffn2_ln2 = W.get(p + "ffn2.ln2.weight");
         B.b_ffn2_ln2 = W.get(p + "ffn2.ln2.bias");
         if (cfg.use_ls) B.w_lay_scale3 = W.get(p + "lay_scale3.scale");

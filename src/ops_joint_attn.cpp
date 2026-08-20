@@ -306,6 +306,7 @@ namespace {
 ggml_tensor * apply_ffn_block(ggml_context * ctx, ggml_tensor * x,
     ggml_tensor * w_norm,
     ggml_tensor * w_ln1, ggml_tensor * b_ln1,
+    ggml_tensor * w_ln1_a, ggml_tensor * b_ln1_a, ggml_tensor * w_ln1_b, ggml_tensor * b_ln1_b,
     ggml_tensor * w_ln2, ggml_tensor * b_ln2,
     ggml_tensor * w_lay_scale)
 {
@@ -313,7 +314,12 @@ ggml_tensor * apply_ffn_block(ggml_context * ctx, ggml_tensor * x,
     // (tensor_utils.cpp), so w_lay_scale is intentionally unused here.
     (void)w_lay_scale;
     ggml_tensor * h = rms_norm(ctx, x, w_norm);
-    h = glu_ffn(ctx, h, w_ln1, b_ln1, w_ln2, b_ln2);
+    if (w_ln1_a) {
+        // F-1: pre-split ln1 halves — two mul_mats, no cont copies.
+        h = glu_ffn_split(ctx, h, w_ln1_a, b_ln1_a, w_ln1_b, b_ln1_b, w_ln2, b_ln2);
+    } else {
+        h = glu_ffn(ctx, h, w_ln1, b_ln1, w_ln2, b_ln2);
+    }
     // JEBF uses `+ x` (not `* 0.5 + x`) unlike the single-stream EBF.
     return ggml_add(ctx, x, h);
 }
@@ -334,10 +340,14 @@ JoinResult jebf_block(
     // --- FFN1 per stream ---
     if (W.has_ffn1) {
         x    = apply_ffn_block(ctx, x,    W.w_norm_ffn1_x,
-            W.w_ffn1_x_ln1, W.b_ffn1_x_ln1, W.w_ffn1_x_ln2, W.b_ffn1_x_ln2,
+            W.w_ffn1_x_ln1, W.b_ffn1_x_ln1,
+            W.w_ffn1_x_ln1_a, W.b_ffn1_x_ln1_a, W.w_ffn1_x_ln1_b, W.b_ffn1_x_ln1_b,
+            W.w_ffn1_x_ln2, W.b_ffn1_x_ln2,
             W.w_lay_scale_ffn1_x);
         pool = apply_ffn_block(ctx, pool, W.w_norm_ffn1_pool,
-            W.w_ffn1_pool_ln1, W.b_ffn1_pool_ln1, W.w_ffn1_pool_ln2, W.b_ffn1_pool_ln2,
+            W.w_ffn1_pool_ln1, W.b_ffn1_pool_ln1,
+            W.w_ffn1_pool_ln1_a, W.b_ffn1_pool_ln1_a, W.w_ffn1_pool_ln1_b, W.b_ffn1_pool_ln1_b,
+            W.w_ffn1_pool_ln2, W.b_ffn1_pool_ln2,
             W.w_lay_scale_ffn1_pool);
     }
 
@@ -353,10 +363,14 @@ JoinResult jebf_block(
     // --- FFN2 per stream ---
     if (W.has_ffn2) {
         x    = apply_ffn_block(ctx, x,    W.w_norm_ffn2_x,
-            W.w_ffn2_x_ln1, W.b_ffn2_x_ln1, W.w_ffn2_x_ln2, W.b_ffn2_x_ln2,
+            W.w_ffn2_x_ln1, W.b_ffn2_x_ln1,
+            W.w_ffn2_x_ln1_a, W.b_ffn2_x_ln1_a, W.w_ffn2_x_ln1_b, W.b_ffn2_x_ln1_b,
+            W.w_ffn2_x_ln2, W.b_ffn2_x_ln2,
             W.w_lay_scale_ffn2_x);
         pool = apply_ffn_block(ctx, pool, W.w_norm_ffn2_pool,
-            W.w_ffn2_pool_ln1, W.b_ffn2_pool_ln1, W.w_ffn2_pool_ln2, W.b_ffn2_pool_ln2,
+            W.w_ffn2_pool_ln1, W.b_ffn2_pool_ln1,
+            W.w_ffn2_pool_ln1_a, W.b_ffn2_pool_ln1_a, W.w_ffn2_pool_ln1_b, W.b_ffn2_pool_ln1_b,
+            W.w_ffn2_pool_ln2, W.b_ffn2_pool_ln2,
             W.w_lay_scale_ffn2_pool);
     }
 

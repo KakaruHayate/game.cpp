@@ -29,6 +29,16 @@ ggml_tensor * glu_ffn(ggml_context * ctx,
                       ggml_tensor * w_ln1, ggml_tensor * b_ln1,
                       ggml_tensor * w_ln2, ggml_tensor * b_ln2);
 
+// F-1: same GLU FFN but with the ln1 projection pre-split into two [in, L]
+// halves (load-time, see tensor_utils.cpp).  Two mul_mats produce contiguous
+// [L, T, B] outputs directly, skipping the strided-view + 2x cont of the
+// monolithic path.  w_ln2/b_ln2 are unchanged (L -> D).
+ggml_tensor * glu_ffn_split(ggml_context * ctx,
+                            ggml_tensor * x,
+                            ggml_tensor * w_ln1_a, ggml_tensor * b_ln1_a,
+                            ggml_tensor * w_ln1_b, ggml_tensor * b_ln1_b,
+                            ggml_tensor * w_ln2, ggml_tensor * b_ln2);
+
 // --------------------------------------------------------------------------
 // CgMLP (modules.backbones.layers.CgMLP)
 //
