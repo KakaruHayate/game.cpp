@@ -62,7 +62,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # SPIRV-Headers shim (Windows Vulkan only)
 #
-# ggml v0.19.0's Vulkan backend hard-requires find_package(SPIRV-Headers CONFIG).
+# ggml v0.20.x's Vulkan backend hard-requires find_package(SPIRV-Headers CONFIG).
 # Windows Vulkan SDKs older than ~1.4.35x ship the headers but not that CMake
 # config file, so the windows-x64-vulkan CI job fails at configure time.
 # Generate a minimal config pointing at the SDK headers when the SDK doesn't
@@ -88,7 +88,7 @@ endif()
 FetchContent_Declare(
     ggml
     GIT_REPOSITORY https://github.com/ggerganov/ggml.git
-    GIT_TAG        v0.19.0
+    GIT_TAG        v0.20.2
     GIT_SHALLOW    TRUE
 )
 
