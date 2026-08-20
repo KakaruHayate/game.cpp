@@ -121,9 +121,12 @@ jobs:
           - os: ubuntu-latest
             name: linux-x64-cpu
             backend: cpu
-            # CPU-only package built with -march=native for the target simd
-            # (ggml then uses AVX2/AVX-512 etc. via GGML_NATIVE).
-            cmake_extra: "-DGGML_NATIVE=ON"
+            # Build ggml's CPU backend as ISA-variant shared libs
+            # (GGML_BACKEND_DL) with runtime dispatch instead of compiling
+            # -march=native into the shipped binary.  Native builds capture
+            # the runner's CPU (e.g. AVX-512) and crash with illegal
+            # instructions on older user CPUs.
+            cmake_extra: "-DGGML_BACKEND_DL=ON"
             build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.so*"
@@ -131,7 +134,13 @@ jobs:
           - os: ubuntu-22.04
             name: linux-x64-cuda
             backend: cuda
-            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75'
+            # CUDA 12.9 (newest Jimver/cuda-toolkit ships; 12.8+ required to
+            # compile Blackwell sm_120).  Arch list: native SASS for the
+            # mainstream generations (Turing→Hopper) plus compute_120 PTX so
+            # RTX 50-series and future GPUs run native-arch JIT instead of
+            # falling back to compute_75 PTX (which works but loses all
+            # newer-architecture kernel optimisations).
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120-virtual'
             build_jobs: 2
             pkg_ext: ""
             lib_glob: "libggml*.so*"
@@ -163,7 +172,9 @@ jobs:
           - os: windows-2022
             name: windows-x64-cuda
             backend: cuda
-            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75'
+            # Same arch policy as linux-x64-cuda (see above): CUDA 12.9 +
+            # SASS for Turing→Hopper + Blackwell PTX.
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120-virtual'
             build_jobs: 2
             pkg_ext: ".exe"
             lib_glob: "ggml*.dll"
@@ -189,17 +200,17 @@ jobs:
 
       - name: Install CUDA Toolkit (Linux)
         if: matrix.backend == 'cuda' && runner.os == 'Linux'
-        uses: Jimver/cuda-toolkit@1a3c14e26833ccf292b268f9a790fb47dea7b2da # v0.2.28
+        uses: Jimver/cuda-toolkit@v0.2.29
         with:
-          cuda: "12.6.3"
+          cuda: "12.9.0"
           method: network
           log-file-suffix: "${{ matrix.name }}.txt"
 
       - name: Install CUDA Toolkit (Windows)
         if: matrix.backend == 'cuda' && runner.os == 'Windows'
-        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        uses: Jimver/cuda-toolkit@v0.2.29
         with:
-          cuda: "12.6.3"
+          cuda: "12.9.0"
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
           log-file-suffix: "${{ matrix.name }}.txt"

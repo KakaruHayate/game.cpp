@@ -22,8 +22,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 // -----------------------------------------------------------------------------
 // Public version helpers (declared in version.h)
@@ -48,9 +50,10 @@ const char * version_string() noexcept {
 }
 
 const char * ggml_version_string() noexcept {
-    // ggml v0.11.0 does not export a runtime-queryable version.  We log the
-    // compile-time pin used by this project so the CLI can say "ggml 0.11.0".
-    return "0.11.0";
+    // ggml does not export a runtime-queryable version.  Report the tag we
+    // pin in cmake/Dependencies.cmake (FetchContent GIT_TAG) so --version
+    // cannot silently drift from the actual dependency.
+    return "v0.19.0";
 }
 
 // -----------------------------------------------------------------------------
@@ -92,6 +95,21 @@ int available_backends_count() noexcept {
 // Internal: backend init helpers
 // -----------------------------------------------------------------------------
 namespace game_ggml::internal {
+
+namespace {
+// CPU threadpool registry: ggml v0.19 creates a *disposable* threadpool on
+// every graph compute when none is attached (thread spawn per call).  We hold
+// one persistent pool per CPU backend and free it together with the backend.
+std::mutex              g_tp_mutex;
+std::unordered_map<ggml_backend_t, ggml_threadpool_t> g_tp;
+
+ggml_threadpool_t make_cpu_threadpool(int n_threads) {
+    // Default params: hybrid polling (poll=50) keeps the worker threads warm
+    // across the many small ops of this model's graphs without pure busy-wait.
+    struct ggml_threadpool_params tpp = ggml_threadpool_params_default(n_threads);
+    return ggml_threadpool_new(&tpp);
+}
+}  // namespace
 
 ggml_backend_t init_backend(Backend which) {
     switch (which) {
@@ -136,6 +154,12 @@ ggml_backend_t init_backend(Backend which) {
                     }
                 }
                 ggml_backend_cpu_set_n_threads(b, static_cast<int>(n));
+                ggml_threadpool_t tp = make_cpu_threadpool(static_cast<int>(n));
+                if (tp) {
+                    ggml_backend_cpu_set_threadpool(b, tp);
+                    std::lock_guard<std::mutex> lock(g_tp_mutex);
+                    g_tp[b] = tp;
+                }
             }
             return b;
         }
@@ -159,6 +183,14 @@ ggml_backend_t init_best_backend() {
 
 void free_backend(ggml_backend_t backend) {
     if (backend == nullptr) return;
+    {
+        std::lock_guard<std::mutex> lock(g_tp_mutex);
+        auto it = g_tp.find(backend);
+        if (it != g_tp.end()) {
+            ggml_threadpool_free(it->second);
+            g_tp.erase(it);
+        }
+    }
     ggml_backend_free(backend);
 }
 

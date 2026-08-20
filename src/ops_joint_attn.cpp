@@ -48,35 +48,67 @@ std::vector<std::uint16_t> build_joint_attn_mask_fp16(
     //   - pool[i] region id = i + 1 (1..N)
     //   - x[t] region id    = regions[t] (0 = padding, 1..N valid)
     //   - allowed iff (same_stream OR same_region(!=0)) AND both valid
-    const int S = N + T;
-    const float kNegInf = -10000.0f;  // ggml convention for "blocked"
-
-    auto region = [&](int i) -> int {
-        if (i < N) return i + 1;
-        return regions[i - N];   // could be 0 for padding
-    };
-    auto is_pool = [&](int i) { return i < N; };
-    auto valid   = [&](int i) -> bool {
-        if (i < N) return true;  // B=1 inference: all pool tokens valid
-        return regions[i - N] != 0;
-    };
-
-    std::vector<std::uint16_t> mask(static_cast<std::size_t>(S) * S,
-        f32_to_f16_bits(kNegInf));
-    const std::uint16_t zero_h = f32_to_f16_bits(0.0f);
-
+    //
     // Layout: ggml flash_attn mask is (kv_seq, q_seq, 1, 1).  The (i=key, j=query)
-    // element sits at index j*S + i where i is innermost (ne[0]=S).
-    for (int j = 0; j < S; ++j) {
-        for (int i = 0; i < S; ++i) {
-            bool allowed = valid(i) && valid(j);
-            if (allowed) {
-                const bool same_stream = (is_pool(i) == is_pool(j));
-                const bool ri = region(i), rj = region(j);
-                const bool same_region = (ri != 0 && rj != 0 && region(i) == region(j));
-                allowed = same_stream || same_region;
-            }
-            mask[static_cast<std::size_t>(j) * S + i] = allowed ? zero_h : f32_to_f16_bits(kNegInf);
+    // element sits at index j*S + i where i is innermost (ne[0]=S).  So mask
+    // "row" j is query j's allowed key set.
+    //
+    // Structure exploited for fast fill (regions is a monotone run-length
+    // encoding — cumsum of boundaries — so same-region frames are contiguous):
+    //   * pool query rows: keys [0, N) (same stream) + the x frames of the
+    //     matching region (contiguous run) are zero; everything else -inf.
+    //   * x query rows: pool key region-1 (single) + all valid x keys (same
+    //     stream, zero-filled span-by-span) are zero; everything else -inf.
+    // This replaces a per-element branchy double loop + per-element software
+    // f16 conversion with bulk fills over contiguous runs.
+    const int S = N + T;
+    const std::uint16_t neg_inf_h = f32_to_f16_bits(-10000.0f);  // ggml convention for "blocked"
+    const std::uint16_t zero_h    = f32_to_f16_bits(0.0f);
+
+    std::vector<std::uint16_t> mask(static_cast<std::size_t>(S) * S, neg_inf_h);
+
+    // Per-region [start, end) intervals of x frames (in x-key index space).
+    std::vector<int> reg_start(static_cast<std::size_t>(N) + 2, -1);
+    std::vector<int> reg_end(static_cast<std::size_t>(N) + 2, -1);
+    for (int i = 0; i < T; ++i) {
+        const int r = regions[i];
+        if (r <= 0 || r > N) continue;             // padding / out-of-range
+        if (reg_start[r] < 0) reg_start[r] = i;
+        reg_end[r] = i + 1;
+    }
+
+    // Contiguous valid (non-padding) x spans — for the x-x same-stream block.
+    struct Span { int b, e; };
+    std::vector<Span> x_spans;
+    for (int i = 0; i < T; ) {
+        if (regions[i] == 0) { ++i; continue; }
+        int e = i;
+        while (e < T && regions[e] != 0) ++e;
+        x_spans.push_back({i, e});
+        i = e;
+    }
+
+    std::uint16_t * M = mask.data();
+
+    // Pool query rows (j = 0..N-1): same-stream pool keys + matching region's x.
+    for (int j = 0; j < N; ++j) {
+        std::uint16_t * row = M + static_cast<std::size_t>(j) * S;
+        std::fill(row, row + N, zero_h);           // pool-pool block (all valid)
+        const int r = j + 1;
+        if (reg_start[r] >= 0) {
+            std::fill(row + N + reg_start[r], row + N + reg_end[r], zero_h);
+        }
+    }
+
+    // X query rows (j = 0..T-1, key row N+j): single matching pool key +
+    // same-stream valid x keys.
+    for (int j = 0; j < T; ++j) {
+        const int rj = regions[j];
+        if (rj == 0) continue;                     // padding query: nothing allowed
+        std::uint16_t * row = M + static_cast<std::size_t>(N + j) * S;
+        if (rj >= 1 && rj <= N) row[rj - 1] = zero_h;
+        for (const Span & sp : x_spans) {
+            std::fill(row + N + sp.b, row + N + sp.e, zero_h);
         }
     }
     return mask;
