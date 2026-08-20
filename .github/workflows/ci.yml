@@ -126,7 +126,7 @@ jobs:
             # -march=native into the shipped binary.  Native builds capture
             # the runner's CPU (e.g. AVX-512) and crash with illegal
             # instructions on older user CPUs.
-            cmake_extra: "-DGGML_BACKEND_DL=ON"
+            cmake_extra: "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON"
             build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.so*"
@@ -140,7 +140,7 @@ jobs:
             # RTX 50-series and future GPUs run native-arch JIT instead of
             # falling back to compute_75 PTX (which works but loses all
             # newer-architecture kernel optimisations).
-            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120-virtual'
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;120-virtual"'
             build_jobs: 2
             pkg_ext: ""
             lib_glob: "libggml*.so*"
@@ -174,7 +174,7 @@ jobs:
             backend: cuda
             # Same arch policy as linux-x64-cuda (see above): CUDA 12.9 +
             # SASS for Turing→Hopper + Blackwell PTX.
-            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;120-virtual'
+            cmake_extra: '-DGAME_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;120-virtual"'
             build_jobs: 2
             pkg_ext: ".exe"
             lib_glob: "ggml*.dll"

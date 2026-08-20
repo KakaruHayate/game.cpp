@@ -235,7 +235,7 @@ int main() {
     params.language = 4;   // 来自 lang_map: { "zh": 4 }
     params.seed     = 42;
     // DBCache（跨步复用，仅 nsteps>1 生效）：
-    // -1 = 自动（CPU 0.25，GPU 关闭）；0 = 关闭；>0 = 显式阈值。
+    // -1 = 自动（所有后端 0.25）；0 = 关闭；>0 = 显式阈值。
     params.db_cache_threshold = 0.25f;
     params.db_cache_fn_blocks = 1;
     params.db_cache_warmup    = 1;
