@@ -88,12 +88,14 @@ endif()
 FetchContent_Declare(
     ggml
     GIT_REPOSITORY https://github.com/ggerganov/ggml.git
-    GIT_TAG        v0.20.2
-    # Full clone (not shallow): with FETCHCONTENT_UPDATES_DISCONNECTED=ON the
-    # populate step is forbidden to fetch, so a shallow clone would only carry
-    # the default branch HEAD — a tag pinned a few commits behind main (e.g.
-    # v0.20.2) then fails with "ref not present locally".  A full clone keeps
-    # every tag reachable and is populated once per build dir.
+    # Pin by commit SHA (8c63e70 = v0.20.2, "bump version to 0.20.2").
+    # Pinning by tag name breaks with FETCHCONTENT_UPDATES_DISCONNECTED=ON:
+    # the populate gitupdate step resolves the tag locally, but a fresh clone
+    # does not carry the tag ref (shallow clone never does; a full clone only
+    # does for tags on the default branch), so it aborts with "requested git
+    # ref ... not present locally".  A commit SHA is always resolvable once
+    # the object exists in the clone.
+    GIT_TAG        8c63e70982c95ceb862e3a1073a2c1beef75d60a
     GIT_SHALLOW    FALSE
 )
 
