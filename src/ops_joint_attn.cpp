@@ -78,12 +78,16 @@ std::vector<std::uint16_t> build_joint_attn_mask_fp16(
     }
 
     // Contiguous valid (non-padding) x spans — for the x-x same-stream block.
+    // The same r in [1, N] predicate as the reg_start/reg_end pass above:
+    // negative or > N ids are treated as invalid everywhere (a malformed id
+    // must not be able to attend to valid x keys).
     struct Span { int b, e; };
+    const auto is_valid_region = [N](int r) { return r >= 1 && r <= N; };
     std::vector<Span> x_spans;
     for (int i = 0; i < T; ) {
-        if (regions[i] == 0) { ++i; continue; }
+        if (!is_valid_region(regions[i])) { ++i; continue; }
         int e = i;
-        while (e < T && regions[e] != 0) ++e;
+        while (e < T && is_valid_region(regions[e])) ++e;
         x_spans.push_back({i, e});
         i = e;
     }
@@ -101,12 +105,13 @@ std::vector<std::uint16_t> build_joint_attn_mask_fp16(
     }
 
     // X query rows (j = 0..T-1, key row N+j): single matching pool key +
-    // same-stream valid x keys.
+    // same-stream valid x keys.  Padding/out-of-range query ids (incl.
+    // negative or > N) admit nothing.
     for (int j = 0; j < T; ++j) {
         const int rj = regions[j];
-        if (rj == 0) continue;                     // padding query: nothing allowed
+        if (!is_valid_region(rj)) continue;      // padding query: nothing allowed
         std::uint16_t * row = M + static_cast<std::size_t>(N + j) * S;
-        if (rj >= 1 && rj <= N) row[rj - 1] = zero_h;
+        row[rj - 1] = zero_h;
         for (const Span & sp : x_spans) {
             std::fill(row + N + sp.b, row + N + sp.e, zero_h);
         }

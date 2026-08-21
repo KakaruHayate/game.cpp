@@ -60,6 +60,28 @@ InferResult Model::infer(const float * waveform, std::size_t n_samples,
 // ============================================================================
 
 Model::Impl::~Impl() {
+    // Order matters: every backend-owned resource must be released before the
+    // backend itself.  The member destructors would otherwise run AFTER
+    // ggml_backend_free(backend) and free device buffers that belong to an
+    // already-destroyed backend (CUDA/Vulkan): PersistentStage ~reset() frees
+    // the gallocr (whose buffer type came from `backend`) and LoadedWeights
+    // frees its backend buffers.  `dbctx`/`dbbuf` have no owner, so release
+    // them here explicitly too (leak otherwise, one D×T set per Model).
+    enc_stage.reset();
+    seg_stage.reset();
+    seg_front_stage.reset();
+    seg_add_stage.reset();
+    seg_mid_stage.reset();
+    seg_update_stage.reset();
+    seg_back_stage.reset();
+    seg_head_stage.reset();
+    est_stage.reset();
+    if (dbctx) {
+        ggml_backend_buffer_free(dbbuf);
+        ggml_free(dbctx);
+        dbctx = nullptr; dbbuf = nullptr;
+    }
+    weights.reset();
     if (backend) internal::free_backend(backend);
 }
 

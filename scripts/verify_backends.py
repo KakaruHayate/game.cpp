@@ -5,9 +5,7 @@ Runs the same waveform through the CPU / Vulkan / CUDA CLI builds
 (nsteps=1 fused path and nsteps=8 DBCache path) and compares outputs:
 
   * CSV note lists (structure: note count, per-note pitch/offset/duration)
-  * MIDI file bytes
   * DBCache hit/miss pattern (via GAME_GGML_DUMP_DBCACHE=1 stderr)
-  * CLI-reported profile timings (informational)
 
 Usage:
     python verify_backends.py --cli-cpu build/bin/game_ggml_cli.exe \
@@ -57,23 +55,27 @@ def read_notes(csv_path: pathlib.Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def parse_pitch(p: str) -> int:
-    """'A3-37' -> midi-ish cents value; 'rest' -> None."""
+def parse_pitch(p: str) -> int | None:
+    """'A3-37' -> midi-ish cents value; 'rest' -> None.
+
+    Raises ValueError for any string that is neither 'rest' nor a parsable
+    pitch — a malformed pitch must not silently compare equal to a rest.
+    """
     if p == "rest":
         return None
     m = re.match(r"([A-G])(#?)(\d+)([+-]\d+)?", p)
     if not m:
-        return None
+        raise ValueError(f"unparsable pitch: {p!r}")
     letter, sharp, octave, cents = m.groups()
     base = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[letter]
     semi = base + (1 if sharp else 0) + (int(octave) + 1) * 12
     return semi * 100 + int(cents or 0)
 
 
-def notes_close(a: list[tuple], b: list[tuple]) -> tuple[bool, str]:
+def notes_close(a: list[dict], b: list[dict]) -> tuple[bool, str]:
     if len(a) != len(b):
         return False, f"note count {len(a)} != {len(b)}"
-    for i, (ra, rb) in enumerate(zip(a, b)):
+    for i, (ra, rb) in enumerate(zip(a, b, strict=True)):
         pa, pb = parse_pitch(ra["pitch"]), parse_pitch(rb["pitch"])
         if (pa is None) != (pb is None):
             return False, f"note[{i}] pitch rest-mismatch {ra['pitch']} vs {rb['pitch']}"
@@ -127,7 +129,19 @@ def main() -> int:
             results[name] = (notes, code, db_pattern(se), out)
             print(f"[{name}] rc={code} notes={len(notes)} dbc={db_pattern(se)}")
 
-        ref = results["cpu"][0]
+        ref, ref_code = results["cpu"][0], results["cpu"][1]
+        if ref_code != 0:
+            print("  !! cpu reference non-zero exit; comparison is meaningless")
+            rc_total = 1
+            continue
+        if not ref:
+            print("  !! cpu reference produced no notes; comparison is meaningless")
+            rc_total = 1
+            continue
+        if len(backends) == 1:
+            print("  !! no GPU backend supplied; nothing to compare against")
+            rc_total = 1
+            continue
         for name in list(results)[1:]:
             notes, code, _, out = results[name]
             if code != 0:

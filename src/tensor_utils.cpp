@@ -241,11 +241,21 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
     ggml_backend_buffer_t buf2 = nullptr;
     {
         ggml_init_params ip{};
-        ip.mem_size   = 512 * 1024;   // metadata for dwconv copies + GLU splits
+        // Metadata budget for the copies: at most 2 new tensors per GGUF
+        // tensor (GLU ln1 weight a/b halves, plus one dwconv F32 copy), so
+        // size from the tensor count rather than a fixed 512 KiB (a model
+        // with many estimator/segmenter layers could exhaust a fixed pool,
+        // and ggml_new_tensor_2d would then abort instead of throwing).
+        ip.mem_size   = ggml_tensor_overhead() *
+            (2 * static_cast<std::size_t>(gguf_get_n_tensors(gctx)) + 1);
         ip.mem_buffer = nullptr;
         ip.no_alloc   = true;
         ctx2 = ggml_init(ip);
-        if (!ctx2) throw GgufError("failed to create weight-copy context");
+        if (!ctx2) {
+            gguf_free(gctx);
+            ggml_free(ctx);
+            throw GgufError("failed to create weight-copy context");
+        }
 
         const int64_t n_tensors = gguf_get_n_tensors(gctx);
         for (int64_t i = 0; i < n_tensors; ++i) {
@@ -333,6 +343,15 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
             ls_scratch.resize(bytes);
             if (std::fseek(f, static_cast<long>(offset), SEEK_SET) != 0 ||
                 std::fread(ls_scratch.data(), 1, bytes, f) != bytes) {
+                // Same cleanup as every other failure path: these handles are
+                // backend buffers / contexts, so leaking them on a retried
+                // load would exhaust device memory.
+                std::fclose(f);
+                ggml_backend_buffer_free(buf);
+                if (buf2) ggml_backend_buffer_free(buf2);
+                if (ctx2) ggml_free(ctx2);
+                gguf_free(gctx);
+                ggml_free(ctx);
                 throw GgufError(std::string("short read for lay_scale '") + name + "'");
             }
 
@@ -345,6 +364,12 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
                 ggml_fp16_to_fp32_row(reinterpret_cast<const ggml_fp16_t *>(ls_scratch.data()),
                                       s.data(), D);
             } else {
+                std::fclose(f);
+                ggml_backend_buffer_free(buf);
+                if (buf2) ggml_backend_buffer_free(buf2);
+                if (ctx2) ggml_free(ctx2);
+                gguf_free(gctx);
+                ggml_free(ctx);
                 throw GgufError(std::string("fold: unsupported lay_scale type '") +
                                 ggml_type_name(t->type) + "' on '" + name + "'");
             }
