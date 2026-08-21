@@ -88,15 +88,17 @@ endif()
 FetchContent_Declare(
     ggml
     # URL archive instead of git: with FETCHCONTENT_UPDATES_DISCONNECTED=ON
-    # the populate step must resolve the pinned ref locally, which a fresh
-    # clone cannot — a shallow clone only carries the default-branch HEAD,
-    # and the v0.20.2 tag/commit is not on it, so populate aborts with
+    # the populate gitupdate step must resolve the pinned ref locally, and a
+    # fresh clone cannot — a shallow clone only carries the default-branch
+    # HEAD, and the v0.20.2 tag/commit is not on it — so populate aborts with
     # "requested git ref ... not present locally".  A URL archive has no git
-    # semantics: populate is a plain download + extract and works offline.
-    # (patches are still applied with `git apply`, which needs no .git.)
+    # ref semantics: populate is a plain download+extract (network needed on
+    # first populate / cache miss; the CI _deps cache then makes later runs
+    # offline).  Patches are still applied with `git apply`, which needs no
+    # .git directory.  (No DOWNLOAD_EXTRACT_TIMESTAMP: requires CMake 3.24+,
+    # project minimum is 3.18.)
     URL      https://github.com/ggerganov/ggml/archive/refs/tags/v0.20.2.tar.gz
     URL_HASH SHA256=55dfd1ea4e6b6b3e25d9411f9525eb4df1c796c03a244e2321388b30f189cd3d
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_GetProperties(ggml)
