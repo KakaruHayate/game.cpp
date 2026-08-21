@@ -158,7 +158,7 @@ Segmenter 占主导，因为 D3PM 循环 `--nsteps` 次。默认 `1` 保持低�
 
 ### DBCache（多步加速，默认开启）
 
-CPU 上 `--nsteps > 1` 默认开启跨步 DBCache（阈值 0.25 / 前置块 1 / 预热 1）：连续两步的
+所有后端 `--nsteps > 1` 默认开启跨步 DBCache（阈值 0.25 / 前置块 1 / 预热 1）：连续两步的
 segmenter 前置块残差低于阈值时跳过尾部块、复用上一步的 tail delta——近无损近似
 （音准漂移 ~0.2–0.3 cent，音符数不变），nsteps=8 时 segmenter 墙钟约减半。
 

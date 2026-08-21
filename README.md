@@ -178,12 +178,13 @@ keeps it cheap; bump to `4` or `8` for higher quality at linear cost.
 
 ### DBCache (multi-step acceleration, default on)
 
-For `--nsteps > 1`, a cross-step DBCache is **on by default on CPU**
-(threshold 0.25, front blocks 1, warmup 1): when the segmenter's front-block
-residual between consecutive D3PM steps is below the threshold, the tail
-blocks are skipped and the previous step's tail delta is reused — a
-near-lossless approximation (~0.2–0.3 cents pitch drift, no note-count change
-in the ablation) that cuts nsteps=8 segmenter wall time roughly in half.
+For `--nsteps > 1`, a cross-step DBCache is **on by default on every
+backend** (threshold 0.25, front blocks 1, warmup 1): when the segmenter's
+front-block residual between consecutive D3PM steps is below the
+threshold, the tail blocks are skipped and the previous step's tail delta
+is reused — a near-lossless approximation (~0.2–0.3 cents pitch drift, no
+note-count change in the ablation) that cuts nsteps=8 segmenter wall time
+roughly in half.
 
 On GPU backends (Vulkan/Metal/CUDA) it defaults **off**, because the
 split-path host round-trips regress quantized-weight graphs (measured +20% on
