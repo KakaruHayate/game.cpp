@@ -121,14 +121,16 @@ jobs:
           - os: ubuntu-latest
             name: linux-x64-cpu
             backend: cpu
-            # ggml v0.20.2 turns GGML_BACKEND_DL into MODULE plugins (dlopen'd,
-            # not linked into the ggml umbrella target), so game.cpp's direct
-            # references to ggml_backend_cpu_init / ggml_threadpool_new etc.
-            # fail to link.  Keep the umbrella-target link (DL off) and get
-            # portable binaries from GGML_NATIVE=OFF + GGML_CPU_ALL_VARIANTS=ON
-            # (all ISA variants built, runtime dispatch by cpu_features) instead
-            # of compiling -march=native into the shipped binary.
-            cmake_extra: "-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON"
+            # v0.20.2 constraint: GGML_CPU_ALL_VARIANTS requires
+            # GGML_BACKEND_DL (ISA variants became dlopen MODULE plugins),
+            # but DL mode does NOT link the CPU backend into the ggml
+            # umbrella target, so game.cpp's direct references
+            # (ggml_backend_cpu_init, ggml_threadpool_new, ...) fail to
+            # link.  Non-DL + GGML_NATIVE=OFF builds a portable baseline
+            # x86-64 CPU backend (no -march=native capture of the runner).
+            # SIMD dispatch for the CPU package needs a dlopen-path refactor
+            # of backend.cpp and is tracked separately.
+            cmake_extra: "-DGGML_NATIVE=OFF"
             build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.so*"
