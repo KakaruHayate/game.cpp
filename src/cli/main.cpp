@@ -101,7 +101,7 @@ void print_usage(const char * argv0) {
         "  --no-slice                             Feed the full WAV as one chunk           (default: false)\n"
         "  --pitch-format name|number             Text output pitch format                 (default: name)\n"
         "  --round-pitch                          Round pitch to integer in text output    (default: false)\n"
-        "  --cache-threshold <float>              DBCache normalized-L1 threshold           (default: auto: CPU 0.25, GPU off)\n"
+        "  --cache-threshold <float>              DBCache normalized-L1 threshold           (default: 0.25 on all backends; 0 = off)\n"
         "  --cache-fn-blocks <int>                DBCache front blocks per step              (default: 1)\n"
         "  --cache-warmup <int>                   D3PM steps before caching starts           (default: 1)\n"
         "  --cache-window-start <float>           only cache from this step fraction on      (default: 0)\n"
@@ -389,7 +389,7 @@ int cmd_extract(int argc, char ** argv) {
     std::string pitch_format = "name";
     bool round_pitch = false;
     std::string rng_replay_path;
-    float db_cache_threshold = -1.0f;    // auto: CPU 0.25, GPU 0 (EP-aware)
+    float db_cache_threshold = -1.0f;    // <0: default 0.25 (all backends); 0: off
     int   db_cache_fn_blocks = 1;
     int   db_cache_warmup    = 1;
     float db_cache_window_start = 0.0f;

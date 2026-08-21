@@ -235,7 +235,7 @@ int main() {
     params.language = 4;   // 来自 lang_map: { "zh": 4 }
     params.seed     = 42;
     // DBCache（跨步复用，仅 nsteps>1 生效）：
-    // -1 = 自动（CPU 0.25，GPU 关闭）；0 = 关闭；>0 = 显式阈值。
+    // -1 = 自动（所有后端 0.25）；0 = 关闭；>0 = 显式阈值。
     params.db_cache_threshold = 0.25f;
     params.db_cache_fn_blocks = 1;
     params.db_cache_warmup    = 1;
@@ -282,7 +282,7 @@ ctest --test-dir ggml_backend/build --output-on-failure
 
 | 依赖 | 版本 pin | 许可 | SPDX 标识 |
 |---|---|---|---|
-| [ggml](https://github.com/ggerganov/ggml) | `v0.11.0` tag | MIT | MIT |
+| [ggml](https://github.com/ggerganov/ggml) | `v0.20.2` tag | MIT | MIT |
 | [pocketfft](https://gitlab.mpcdf.mpg.de/mtr/pocketfft) | `cpp` 分支 `32424d20` | BSD-3-Clause | BSD-3-Clause |
 | [dr_libs](https://github.com/mackron/dr_libs) | `master` 分支 `243e26ff` | Public Domain / MIT-0（双许可） | `Unlicense OR MIT-0` |
 | [GoogleTest](https://github.com/google/googletest) | `v1.14.0` tag（仅测试） | BSD-3-Clause | BSD-3-Clause |

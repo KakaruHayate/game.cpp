@@ -7,6 +7,7 @@
 #include <cmath>
 #include <complex>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 namespace game_ggml {
@@ -136,32 +137,66 @@ std::vector<float> MelExtractor::forward(const float * wav, std::size_t n) const
     const int T = num_frames(n);
     if (T <= 0) return {};
 
-    std::vector<float>               frame(n_fft, 0.0f);
-    std::vector<std::complex<float>> spec(n_bins);
-    std::vector<float>               mag(n_bins);
-    std::vector<float>               out(static_cast<std::size_t>(T) * n_mels);
+    std::vector<float> out(static_cast<std::size_t>(T) * n_mels);
 
     pocketfft::shape_t   shape      = {static_cast<std::size_t>(n_fft)};
     pocketfft::stride_t  stride_in  = {sizeof(float)};
     pocketfft::stride_t  stride_out = {sizeof(std::complex<float>)};
     pocketfft::shape_t   axes       = {0};
 
-    for (int t = 0; t < T; ++t) {
-        const std::size_t off = static_cast<std::size_t>(t) * hop;
-        std::fill(frame.begin(), frame.end(), 0.0f);
-        for (int k = 0; k < win; ++k) frame[k] = padded[off + k] * window[k];
+    // Frames are independent — split the range into contiguous stripes and
+    // process them on a small worker pool.  At ~1000+ frames per 10 s clip
+    // this is several ms of single-threaded work that parallelizes cleanly.
+    // Guard the pool size by frame count so short clips never pay for
+    // threads they don't use.
+    unsigned hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 1;
+    const int want  = static_cast<int>(std::min<unsigned>(hw, 8u));
+    const int n_thr = std::max(1, std::min(want, T / 128 + 1));
 
-        pocketfft::r2c(shape, stride_in, stride_out, axes, pocketfft::FORWARD,
-                       frame.data(), spec.data(), 1.0f);
-        for (int k = 0; k < n_bins; ++k) mag[k] = std::hypot(spec[k].real(), spec[k].imag());
+    auto worker = [&](int t_begin, int t_end) {
+        std::vector<float>               frame(n_fft, 0.0f);
+        std::vector<std::complex<float>> spec(n_bins);
+        std::vector<float>               mag(n_bins);
+        for (int t = t_begin; t < t_end; ++t) {
+            const std::size_t off = static_cast<std::size_t>(t) * hop;
+            std::fill(frame.begin(), frame.end(), 0.0f);
+            for (int k = 0; k < win; ++k) frame[k] = padded[off + k] * window[k];
 
-        for (int m = 0; m < n_mels; ++m) {
-            const float * row = mel_fb.data() + static_cast<std::size_t>(m) * n_bins;
-            float acc = 0.0f;
-            for (int k = 0; k < n_bins; ++k) acc += row[k] * mag[k];
-            out[static_cast<std::size_t>(t) * n_mels + m] = std::log(std::max(acc, cfg.clip_val));
+            pocketfft::r2c(shape, stride_in, stride_out, axes, pocketfft::FORWARD,
+                           frame.data(), spec.data(), 1.0f);
+            // Plain sqrt (not std::hypot): no overflow risk at FFT output
+            // magnitudes, and matches torch/librosa's |·| semantics within
+            // 1 ulp while running several times faster.
+            for (int k = 0; k < n_bins; ++k) {
+                const float re = spec[k].real(), im = spec[k].imag();
+                mag[k] = std::sqrt(re * re + im * im);
+            }
+
+            float * dst = out.data() + static_cast<std::size_t>(t) * n_mels;
+            for (int m = 0; m < n_mels; ++m) {
+                const float * row = mel_fb.data() + static_cast<std::size_t>(m) * n_bins;
+                float acc = 0.0f;
+                for (int k = 0; k < n_bins; ++k) acc += row[k] * mag[k];
+                dst[m] = std::log(std::max(acc, cfg.clip_val));
+            }
         }
+    };
+
+    if (n_thr == 1) {
+        worker(0, T);
+        return out;
     }
+    const int per = (T + n_thr - 1) / n_thr;
+    std::vector<std::thread> pool;
+    pool.reserve(n_thr);
+    int t0 = 0;
+    for (int i = 0; i < n_thr && t0 < T; ++i) {
+        const int t1 = std::min(T, t0 + per);
+        pool.emplace_back(worker, t0, t1);
+        t0 = t1;
+    }
+    for (auto & th : pool) th.join();
     return out;
 }
 

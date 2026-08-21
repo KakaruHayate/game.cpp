@@ -273,7 +273,7 @@ int main() {
     params.language = 4;   // from lang_map: { "zh": 4 }
     params.seed     = 42;
     // DBCache (segmenter cross-step reuse; affects nsteps>1 only).
-    // -1 = auto (CPU 0.25, GPU off); 0 = off; >0 = explicit threshold.
+    // -1 = auto (0.25 on all backends); 0 = off; >0 = explicit threshold.
     params.db_cache_threshold = 0.25f;
     params.db_cache_fn_blocks = 1;
     params.db_cache_warmup    = 1;
@@ -346,7 +346,7 @@ trees live under `build/_deps/<name>-src/` after the first configure.
 
 | Dependency | Version pin | License | SPDX identifier |
 |---|---|---|---|
-| [ggml](https://github.com/ggerganov/ggml) | `v0.11.0` tag | MIT | MIT |
+| [ggml](https://github.com/ggerganov/ggml) | `v0.20.2` tag | MIT | MIT |
 | [pocketfft](https://gitlab.mpcdf.mpg.de/mtr/pocketfft) | commit `32424d20` on `cpp` branch | BSD-3-Clause | BSD-3-Clause |
 | [dr_libs](https://github.com/mackron/dr_libs) | commit `243e26ff` on `master` | Public Domain / MIT-0 (dual) | `Unlicense OR MIT-0` |
 | [GoogleTest](https://github.com/google/googletest) | `v1.14.0` tag (tests only) | BSD-3-Clause | BSD-3-Clause |

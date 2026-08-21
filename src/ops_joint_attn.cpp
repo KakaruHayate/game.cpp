@@ -48,35 +48,72 @@ std::vector<std::uint16_t> build_joint_attn_mask_fp16(
     //   - pool[i] region id = i + 1 (1..N)
     //   - x[t] region id    = regions[t] (0 = padding, 1..N valid)
     //   - allowed iff (same_stream OR same_region(!=0)) AND both valid
-    const int S = N + T;
-    const float kNegInf = -10000.0f;  // ggml convention for "blocked"
-
-    auto region = [&](int i) -> int {
-        if (i < N) return i + 1;
-        return regions[i - N];   // could be 0 for padding
-    };
-    auto is_pool = [&](int i) { return i < N; };
-    auto valid   = [&](int i) -> bool {
-        if (i < N) return true;  // B=1 inference: all pool tokens valid
-        return regions[i - N] != 0;
-    };
-
-    std::vector<std::uint16_t> mask(static_cast<std::size_t>(S) * S,
-        f32_to_f16_bits(kNegInf));
-    const std::uint16_t zero_h = f32_to_f16_bits(0.0f);
-
+    //
     // Layout: ggml flash_attn mask is (kv_seq, q_seq, 1, 1).  The (i=key, j=query)
-    // element sits at index j*S + i where i is innermost (ne[0]=S).
-    for (int j = 0; j < S; ++j) {
-        for (int i = 0; i < S; ++i) {
-            bool allowed = valid(i) && valid(j);
-            if (allowed) {
-                const bool same_stream = (is_pool(i) == is_pool(j));
-                const bool ri = region(i), rj = region(j);
-                const bool same_region = (ri != 0 && rj != 0 && region(i) == region(j));
-                allowed = same_stream || same_region;
-            }
-            mask[static_cast<std::size_t>(j) * S + i] = allowed ? zero_h : f32_to_f16_bits(kNegInf);
+    // element sits at index j*S + i where i is innermost (ne[0]=S).  So mask
+    // "row" j is query j's allowed key set.
+    //
+    // Structure exploited for fast fill (regions is a monotone run-length
+    // encoding — cumsum of boundaries — so same-region frames are contiguous):
+    //   * pool query rows: keys [0, N) (same stream) + the x frames of the
+    //     matching region (contiguous run) are zero; everything else -inf.
+    //   * x query rows: pool key region-1 (single) + all valid x keys (same
+    //     stream, zero-filled span-by-span) are zero; everything else -inf.
+    // This replaces a per-element branchy double loop + per-element software
+    // f16 conversion with bulk fills over contiguous runs.
+    const int S = N + T;
+    const std::uint16_t neg_inf_h = f32_to_f16_bits(-10000.0f);  // ggml convention for "blocked"
+    const std::uint16_t zero_h    = f32_to_f16_bits(0.0f);
+
+    std::vector<std::uint16_t> mask(static_cast<std::size_t>(S) * S, neg_inf_h);
+
+    // Per-region [start, end) intervals of x frames (in x-key index space).
+    std::vector<int> reg_start(static_cast<std::size_t>(N) + 2, -1);
+    std::vector<int> reg_end(static_cast<std::size_t>(N) + 2, -1);
+    for (int i = 0; i < T; ++i) {
+        const int r = regions[i];
+        if (r <= 0 || r > N) continue;             // padding / out-of-range
+        if (reg_start[r] < 0) reg_start[r] = i;
+        reg_end[r] = i + 1;
+    }
+
+    // Contiguous valid (non-padding) x spans — for the x-x same-stream block.
+    // The same r in [1, N] predicate as the reg_start/reg_end pass above:
+    // negative or > N ids are treated as invalid everywhere (a malformed id
+    // must not be able to attend to valid x keys).
+    struct Span { int b, e; };
+    const auto is_valid_region = [N](int r) { return r >= 1 && r <= N; };
+    std::vector<Span> x_spans;
+    for (int i = 0; i < T; ) {
+        if (!is_valid_region(regions[i])) { ++i; continue; }
+        int e = i;
+        while (e < T && is_valid_region(regions[e])) ++e;
+        x_spans.push_back({i, e});
+        i = e;
+    }
+
+    std::uint16_t * M = mask.data();
+
+    // Pool query rows (j = 0..N-1): same-stream pool keys + matching region's x.
+    for (int j = 0; j < N; ++j) {
+        std::uint16_t * row = M + static_cast<std::size_t>(j) * S;
+        std::fill(row, row + N, zero_h);           // pool-pool block (all valid)
+        const int r = j + 1;
+        if (reg_start[r] >= 0) {
+            std::fill(row + N + reg_start[r], row + N + reg_end[r], zero_h);
+        }
+    }
+
+    // X query rows (j = 0..T-1, key row N+j): single matching pool key +
+    // same-stream valid x keys.  Padding/out-of-range query ids (incl.
+    // negative or > N) admit nothing.
+    for (int j = 0; j < T; ++j) {
+        const int rj = regions[j];
+        if (!is_valid_region(rj)) continue;      // padding query: nothing allowed
+        std::uint16_t * row = M + static_cast<std::size_t>(N + j) * S;
+        row[rj - 1] = zero_h;
+        for (const Span & sp : x_spans) {
+            std::fill(row + N + sp.b, row + N + sp.e, zero_h);
         }
     }
     return mask;
@@ -274,12 +311,20 @@ namespace {
 ggml_tensor * apply_ffn_block(ggml_context * ctx, ggml_tensor * x,
     ggml_tensor * w_norm,
     ggml_tensor * w_ln1, ggml_tensor * b_ln1,
+    ggml_tensor * w_ln1_a, ggml_tensor * b_ln1_a, ggml_tensor * w_ln1_b, ggml_tensor * b_ln1_b,
     ggml_tensor * w_ln2, ggml_tensor * b_ln2,
     ggml_tensor * w_lay_scale)
 {
+    // F-2: lay_scale is folded into the ln2 linear at load time
+    // (tensor_utils.cpp), so w_lay_scale is intentionally unused here.
+    (void)w_lay_scale;
     ggml_tensor * h = rms_norm(ctx, x, w_norm);
-    h = glu_ffn(ctx, h, w_ln1, b_ln1, w_ln2, b_ln2);
-    if (w_lay_scale) h = layer_scale(ctx, h, w_lay_scale);
+    if (w_ln1_a) {
+        // F-1: pre-split ln1 halves — two mul_mats, no cont copies.
+        h = glu_ffn_split(ctx, h, w_ln1_a, b_ln1_a, w_ln1_b, b_ln1_b, w_ln2, b_ln2);
+    } else {
+        h = glu_ffn(ctx, h, w_ln1, b_ln1, w_ln2, b_ln2);
+    }
     // JEBF uses `+ x` (not `* 0.5 + x`) unlike the single-stream EBF.
     return ggml_add(ctx, x, h);
 }
@@ -300,29 +345,37 @@ JoinResult jebf_block(
     // --- FFN1 per stream ---
     if (W.has_ffn1) {
         x    = apply_ffn_block(ctx, x,    W.w_norm_ffn1_x,
-            W.w_ffn1_x_ln1, W.b_ffn1_x_ln1, W.w_ffn1_x_ln2, W.b_ffn1_x_ln2,
+            W.w_ffn1_x_ln1, W.b_ffn1_x_ln1,
+            W.w_ffn1_x_ln1_a, W.b_ffn1_x_ln1_a, W.w_ffn1_x_ln1_b, W.b_ffn1_x_ln1_b,
+            W.w_ffn1_x_ln2, W.b_ffn1_x_ln2,
             W.w_lay_scale_ffn1_x);
         pool = apply_ffn_block(ctx, pool, W.w_norm_ffn1_pool,
-            W.w_ffn1_pool_ln1, W.b_ffn1_pool_ln1, W.w_ffn1_pool_ln2, W.b_ffn1_pool_ln2,
+            W.w_ffn1_pool_ln1, W.b_ffn1_pool_ln1,
+            W.w_ffn1_pool_ln1_a, W.b_ffn1_pool_ln1_a, W.w_ffn1_pool_ln1_b, W.b_ffn1_pool_ln1_b,
+            W.w_ffn1_pool_ln2, W.b_ffn1_pool_ln2,
             W.w_lay_scale_ffn1_pool);
     }
 
     // --- PJAC ---
+    // F-2: lay_scale_jpac_{x,pool} folded into merge_linear_{x,pool} at load
+    // time, so the residual uses att.* directly.
     auto att = pjac(ctx, pool, x, W.pjac,
         global_positions, region_indices, attn_mask_fp16,
         num_heads, head_dim, theta);
-    ggml_tensor * x_att    = W.w_lay_scale_jpac_x    ? layer_scale(ctx, att.x,    W.w_lay_scale_jpac_x)    : att.x;
-    ggml_tensor * pool_att = W.w_lay_scale_jpac_pool ? layer_scale(ctx, att.pool, W.w_lay_scale_jpac_pool) : att.pool;
-    x    = ggml_add(ctx, x,    x_att);
-    pool = ggml_add(ctx, pool, pool_att);
+    x    = ggml_add(ctx, x,    att.x);
+    pool = ggml_add(ctx, pool, att.pool);
 
     // --- FFN2 per stream ---
     if (W.has_ffn2) {
         x    = apply_ffn_block(ctx, x,    W.w_norm_ffn2_x,
-            W.w_ffn2_x_ln1, W.b_ffn2_x_ln1, W.w_ffn2_x_ln2, W.b_ffn2_x_ln2,
+            W.w_ffn2_x_ln1, W.b_ffn2_x_ln1,
+            W.w_ffn2_x_ln1_a, W.b_ffn2_x_ln1_a, W.w_ffn2_x_ln1_b, W.b_ffn2_x_ln1_b,
+            W.w_ffn2_x_ln2, W.b_ffn2_x_ln2,
             W.w_lay_scale_ffn2_x);
         pool = apply_ffn_block(ctx, pool, W.w_norm_ffn2_pool,
-            W.w_ffn2_pool_ln1, W.b_ffn2_pool_ln1, W.w_ffn2_pool_ln2, W.b_ffn2_pool_ln2,
+            W.w_ffn2_pool_ln1, W.b_ffn2_pool_ln1,
+            W.w_ffn2_pool_ln1_a, W.b_ffn2_pool_ln1_a, W.w_ffn2_pool_ln1_b, W.b_ffn2_pool_ln1_b,
+            W.w_ffn2_pool_ln2, W.b_ffn2_pool_ln2,
             W.w_lay_scale_ffn2_pool);
     }
 

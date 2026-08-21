@@ -1,5 +1,5 @@
 diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
-index a923755..56304ff 100644
+index 585e10d..4f3686a 100644
 --- a/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/src/ggml-vulkan/ggml-vulkan.cpp
 @@ -50,6 +50,7 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
@@ -192,7 +192,7 @@ index a923755..56304ff 100644
  void vk_command_pool::init(vk_device& device, vk_queue *q_) {
      cmd_buffers.clear();
      q = q_;
-@@ -3025,7 +3180,8 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
+@@ -3026,7 +3181,8 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
  #endif
  
      try {
@@ -202,7 +202,7 @@ index a923755..56304ff 100644
      } catch (const vk::SystemError& e) {
          std::cerr << "ggml_vulkan: Compute pipeline creation failed for " << pipeline->name << std::endl;
          std::cerr << "ggml_vulkan: " << e.what() << std::endl;
-@@ -6910,6 +7066,8 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -6934,6 +7090,8 @@ static vk_device ggml_vk_get_device(size_t idx) {
              .setPEnabledExtensionNames(device_extensions);
          device_create_info.setPNext(&device_features2);
          device->device = device->physical_device.createDevice(device_create_info);
@@ -211,7 +211,7 @@ index a923755..56304ff 100644
  
          if (device->device_fault) {
              device->pfn_vkGetDeviceFaultInfoEXT = (PFN_vkGetDeviceFaultInfoEXT)
-@@ -17372,6 +17530,11 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+@@ -17402,6 +17560,11 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
          ggml_vk_synchronize(ctx);
      }
  

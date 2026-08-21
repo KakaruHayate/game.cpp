@@ -62,7 +62,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # SPIRV-Headers shim (Windows Vulkan only)
 #
-# ggml v0.19.0's Vulkan backend hard-requires find_package(SPIRV-Headers CONFIG).
+# ggml v0.20.x's Vulkan backend hard-requires find_package(SPIRV-Headers CONFIG).
 # Windows Vulkan SDKs older than ~1.4.35x ship the headers but not that CMake
 # config file, so the windows-x64-vulkan CI job fails at configure time.
 # Generate a minimal config pointing at the SDK headers when the SDK doesn't
@@ -87,9 +87,18 @@ endif()
 # ---------------------------------------------------------------------------
 FetchContent_Declare(
     ggml
-    GIT_REPOSITORY https://github.com/ggerganov/ggml.git
-    GIT_TAG        v0.19.0
-    GIT_SHALLOW    TRUE
+    # URL archive instead of git: with FETCHCONTENT_UPDATES_DISCONNECTED=ON
+    # the populate gitupdate step must resolve the pinned ref locally, and a
+    # fresh clone cannot — a shallow clone only carries the default-branch
+    # HEAD, and the v0.20.2 tag/commit is not on it — so populate aborts with
+    # "requested git ref ... not present locally".  A URL archive has no git
+    # ref semantics: populate is a plain download+extract (network needed on
+    # first populate / cache miss; the CI _deps cache then makes later runs
+    # offline).  Patches are still applied with `git apply`, which needs no
+    # .git directory.  (No DOWNLOAD_EXTRACT_TIMESTAMP: requires CMake 3.24+,
+    # project minimum is 3.18.)
+    URL      https://github.com/ggerganov/ggml/archive/refs/tags/v0.20.2.tar.gz
+    URL_HASH SHA256=55dfd1ea4e6b6b3e25d9411f9525eb4df1c796c03a244e2321388b30f189cd3d
 )
 
 FetchContent_GetProperties(ggml)

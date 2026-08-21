@@ -53,6 +53,11 @@ private:
 
     ggml_context *         ctx_     = nullptr;
     ggml_backend_buffer_t  buffer_  = nullptr;
+    // Second context/buffer pair holding the load-time F32 copies of the F16
+    // depthwise-conv weights (the gguf-init context is sized exactly for its
+    // tensor table, so the copies cannot live there).
+    ggml_context *         ctx2_    = nullptr;
+    ggml_backend_buffer_t  buffer2_ = nullptr;
     std::unordered_map<std::string, ggml_tensor *> tensors_;
 };
 

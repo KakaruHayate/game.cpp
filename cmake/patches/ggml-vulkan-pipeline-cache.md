@@ -38,7 +38,7 @@ driver) load precompiled PSO bytes instead of recompiling every shader.
 
 ## Baseline & re-apply
 
-- Applies to **ggml v0.19.0** (`ggml-vulkan.cpp`). Pinned by game.cpp
+- Applies to **ggml v0.20.2** (`ggml-vulkan.cpp`). Pinned by game.cpp
   FetchContent; re-apply per ggml upgrade via `cmake/Dependencies.cmake`
   `game_ggml_apply_patch` (idempotent: skips if already applied).
 

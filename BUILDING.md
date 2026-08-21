@@ -22,7 +22,7 @@ sudo apt install libvulkan-dev vulkan-tools
 #   sudo apt install glslc-tools   # not available on all distros
 
 # Optional: CUDA backend (NVIDIA GPUs)
-# Install a CUDA Toolkit supported by your compiler and driver. CI uses CUDA 12.6.3.
+# Install a CUDA Toolkit supported by your compiler and driver. CI uses CUDA 12.9.0.
 # The prebuilt CUDA packages target Turing (CC 7.5) and newer GPUs.
 # https://developer.nvidia.com/cuda-downloads
 
@@ -57,9 +57,9 @@ brew install cmake ccache
 # Vulkan SDK (optional, for Vulkan backend)
 #   https://vulkan.lunarg.com/sdk/home
 #
-# CUDA Toolkit 12.6.x (optional, for CUDA backend)
+# CUDA Toolkit 12.9.x (optional, for CUDA backend)
 #   https://developer.nvidia.com/cuda-downloads
-# CUDA 12.6 supports Visual Studio 2022 / MSVC 193x.
+# CUDA 12.9 supports Visual Studio 2019 16.11+ and 2022 (MSVC 192x/193x).
 ```
 
 > **Windows + CUDA toolchain notes (from local builds):**
@@ -73,7 +73,7 @@ brew install cmake ccache
 >   Pin the one you intend to use, e.g. set `CUDA_PATH_V13_0` to the v11.6 path
 >   when building with CUDA 11.6, otherwise nvcc 13 + MSVC 14.29 hits
 >   `__cudaLaunch` macro breakage (`error C4002`).
-> - CI reference: `ubuntu-22.04` / `windows-2022` + CUDA 12.6.3.
+> - CI reference: `ubuntu-22.04` / `windows-2022` + CUDA 12.9.0.
 
 ## Quick start
 
@@ -193,7 +193,7 @@ build/bin/game_ggml_cli serve game_medium.gguf
 ## CUDA compatibility and CI scope
 
 The hosted CI builds Linux x64 and Windows x64 CUDA packages with CUDA Toolkit
-12.6.3 and Visual Studio 2022 on Windows. It verifies Toolkit discovery, CUDA
+12.9.0 and Visual Studio 2022 on Windows. It verifies Toolkit discovery, CUDA
 compilation, linking, and packaging. On Windows, `ggml-cuda.dll` imports
 `nvcuda.dll` (the NVIDIA driver library) at load time, and GitHub-hosted runners
 have no NVIDIA driver, so the CLI cannot start there even for `--version`; the
@@ -203,19 +203,24 @@ dependencies instead, and performs the startup smoke test only when
 provide an NVIDIA GPU, so actual CUDA inference must still be smoke-tested on an
 NVIDIA system.
 
-The release architecture is `75`, which emits both native CC 7.5 SASS and CC
-7.5 PTX. Turing GPUs (for example, GeForce RTX 20 series) use the native image;
-newer Ampere, Ada, and later drivers can JIT the PTX forward-compatible image.
-This keeps the hosted build practical: compiling every ggml CUDA translation
-unit separately for four real architectures was several times slower and used
-substantially more memory.
+The release architecture list is `75;80;86;89;90;120-virtual`:
+native SASS for Turing (CC 7.5), Ampere data-center (CC 8.0), Ampere consumer
+(CC 8.6), Ada (CC 8.9) and Hopper (CC 9.0), plus `compute_120` PTX so RTX
+50-series and future GPUs JIT with a Blackwell-targeted image. A plain `75`
+build also runs on newer GPUs through its bundled `compute_75` PTX, but the
+JIT-ed kernels then miss every newer-architecture optimisation; shipping SASS
+for the mainstream generations removes that penalty. Compiling six
+architectures roughly multiplies the nvcc workload (the CUDA jobs already run
+with `build_jobs: 2` for memory headroom), which is the trade-off for native
+performance on each generation.
 
 Pascal and Volta are not included in the prebuilt package. Source builds that
 need these older GPUs can use CUDA 12.x and add `61-real` and/or `70-real`.
-Source builds that prefer native images for each newer generation may use
+Source builds that want to trim the list back to Turing→Ada may use
 `75-real;80-real;86-real;89-real`, accepting the longer build and larger binary.
 CUDA 13.0 removed NVCC offline compilation for architectures older than CC 7.5;
-use CUDA 12.9 or earlier when maintaining such builds.
+use CUDA 12.9 or earlier when maintaining such builds. sm_100/sm_120 (Blackwell)
+compile targets require CUDA 12.8 or newer.
 
 CUDA 12.x minor-version compatibility requires at least NVIDIA driver
 525.60.13 on Linux or 528.33 on Windows, subject to the limitations documented

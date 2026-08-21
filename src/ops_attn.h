@@ -98,6 +98,11 @@ struct EBFBlockWeights {
     ggml_tensor *   w_norm1         = nullptr;
     ggml_tensor *   w_ffn1_ln1      = nullptr;   // ln1.weight  (D -> 2L)
     ggml_tensor *   b_ffn1_ln1      = nullptr;
+    // F-1: split ln1 halves (load-time; null => use monolithic ln1 above).
+    ggml_tensor *   w_ffn1_ln1_a    = nullptr;   // .ln1.weight.a  (D -> L)
+    ggml_tensor *   b_ffn1_ln1_a    = nullptr;
+    ggml_tensor *   w_ffn1_ln1_b    = nullptr;   // .ln1.weight.b
+    ggml_tensor *   b_ffn1_ln1_b    = nullptr;
     ggml_tensor *   w_ffn1_ln2      = nullptr;   // ln2.weight  (L ->  D)
     ggml_tensor *   b_ffn1_ln2      = nullptr;
     ggml_tensor *   w_lay_scale1    = nullptr;   // optional
@@ -111,6 +116,10 @@ struct EBFBlockWeights {
     ggml_tensor *   w_norm2         = nullptr;
     ggml_tensor *   w_ffn2_ln1      = nullptr;
     ggml_tensor *   b_ffn2_ln1      = nullptr;
+    ggml_tensor *   w_ffn2_ln1_a    = nullptr;   // F-1 split halves
+    ggml_tensor *   b_ffn2_ln1_a    = nullptr;
+    ggml_tensor *   w_ffn2_ln1_b    = nullptr;
+    ggml_tensor *   b_ffn2_ln1_b    = nullptr;
     ggml_tensor *   w_ffn2_ln2      = nullptr;
     ggml_tensor *   b_ffn2_ln2      = nullptr;
     ggml_tensor *   w_lay_scale3    = nullptr;   // optional

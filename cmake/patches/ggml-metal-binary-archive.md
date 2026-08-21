@@ -27,7 +27,7 @@ Controlled by the same `GGML_METAL_ARCHIVE_PATH` env var; disable with
 
 ## Baseline
 
-Applied against **ggml v0.19.0** (`ggml-metal-device.m`).  Verify with the
+Applied against **ggml v0.20.2** (`ggml-metal-device.m`).  Verify with the
 same command used in `cmake/Dependencies.cmake`:
 
 ```

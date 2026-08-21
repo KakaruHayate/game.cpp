@@ -138,13 +138,12 @@ ggml_tensor * pac(
 // ---------------------------------------------------------------------------
 // EBF block
 // ---------------------------------------------------------------------------
-
-namespace {
-// Elementwise scale by half (used by EBF residuals: x + 0.5 * branch).
-ggml_tensor * scale_half(ggml_context * ctx, ggml_tensor * x) {
-    return ggml_scale(ctx, x, 0.5f);
-}
-}  // namespace
+//
+// F-2: the branch residuals are  x + 0.5·lay_scale(branch).  Both factors are
+// diagonal and are folded into the producing linear (ffn*.ln2 / merge_linear)
+// at load time (tensor_utils.cpp), so the graph no longer emits the lay_scale
+// mul and the 0.5 scale node per block.  w_lay_scale* are still bound (the
+// GGUF keeps the tensors) but are intentionally not referenced here.
 
 ggml_tensor * ebf_block(
     ggml_context * ctx,
@@ -157,23 +156,30 @@ ggml_tensor * ebf_block(
     // FFN 1 (pre-attention)
     if (W.has_ffn1) {
         ggml_tensor * h = rms_norm(ctx, x, W.w_norm1);
-        h = glu_ffn(ctx, h, W.w_ffn1_ln1, W.b_ffn1_ln1, W.w_ffn1_ln2, W.b_ffn1_ln2);
-        if (W.w_lay_scale1) h = layer_scale(ctx, h, W.w_lay_scale1);
-        h = scale_half(ctx, h);
+        if (W.w_ffn1_ln1_a) {
+            h = glu_ffn_split(ctx, h,
+                W.w_ffn1_ln1_a, W.b_ffn1_ln1_a, W.w_ffn1_ln1_b, W.b_ffn1_ln1_b,
+                W.w_ffn1_ln2, W.b_ffn1_ln2);
+        } else {
+            h = glu_ffn(ctx, h, W.w_ffn1_ln1, W.b_ffn1_ln1, W.w_ffn1_ln2, W.b_ffn1_ln2);
+        }
         x = ggml_add(ctx, x, h);
     }
 
     // PAC
     ggml_tensor * p = pac(ctx, x, W.pac_w, positions, num_heads, head_dim, theta);
-    if (W.w_lay_scale2) p = layer_scale(ctx, p, W.w_lay_scale2);
     x = ggml_add(ctx, x, p);
 
     // FFN 2 (post-attention)
     if (W.has_ffn2) {
         ggml_tensor * h = rms_norm(ctx, x, W.w_norm2);
-        h = glu_ffn(ctx, h, W.w_ffn2_ln1, W.b_ffn2_ln1, W.w_ffn2_ln2, W.b_ffn2_ln2);
-        if (W.w_lay_scale3) h = layer_scale(ctx, h, W.w_lay_scale3);
-        h = scale_half(ctx, h);
+        if (W.w_ffn2_ln1_a) {
+            h = glu_ffn_split(ctx, h,
+                W.w_ffn2_ln1_a, W.b_ffn2_ln1_a, W.w_ffn2_ln1_b, W.b_ffn2_ln1_b,
+                W.w_ffn2_ln2, W.b_ffn2_ln2);
+        } else {
+            h = glu_ffn(ctx, h, W.w_ffn2_ln1, W.b_ffn2_ln1, W.w_ffn2_ln2, W.b_ffn2_ln2);
+        }
         x = ggml_add(ctx, x, h);
     }
 
