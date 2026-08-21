@@ -163,7 +163,8 @@ JoinResult joint_attention(
     ggml_tensor * attn_mask_fp16,          // (P+T, P+T, 1, 1) fp16
     int num_heads,
     int head_dim,
-    float theta = 10000.0f);
+    float theta = 10000.0f,
+    bool pool_only = false);               // F-6: only the N pool query rows
 
 // PJAC: parallel joint-attn + CgMLP, per-stream merges.
 JoinResult pjac(
@@ -176,9 +177,13 @@ JoinResult pjac(
     ggml_tensor * attn_mask_fp16,
     int num_heads,
     int head_dim,
-    float theta = 10000.0f);
+    float theta = 10000.0f,
+    bool pool_only = false);               // F-6: skip the x stream entirely
 
 // Full JEBF block (FFN1 + PJAC + FFN2 with residual + LayerScale on each).
+// pool_only (F-6): used for the estimator's last layer, where the x stream
+// has no consumer — only the pool stream is computed (no x FFN / no x-side
+// CgMLP / attention restricted to the N pool query rows).
 JoinResult jebf_block(
     ggml_context * ctx,
     ggml_tensor * pool,
@@ -189,6 +194,7 @@ JoinResult jebf_block(
     ggml_tensor * attn_mask_fp16,
     int num_heads,
     int head_dim,
-    float theta = 10000.0f);
+    float theta = 10000.0f,
+    bool pool_only = false);
 
 }  // namespace game_ggml::internal::ops

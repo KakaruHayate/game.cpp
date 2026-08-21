@@ -156,7 +156,8 @@ JoinResult joint_attention(
     ggml_tensor * attn_mask_fp16,
     int num_heads,
     int head_dim,
-    float theta)
+    float theta,
+    bool pool_only)
 {
     const int64_t N = pool->ne[1];
     const int64_t T = x->ne[1];
@@ -189,44 +190,70 @@ JoinResult joint_attention(
     x_q    = rms_norm(ctx, x_q,    W.w_x_q_norm);
     x_k    = rms_norm(ctx, x_k,    W.w_x_k_norm);
 
-    // Concatenate pool and x along ne[2] (n_tokens).
+    // Concatenate pool and x along ne[2] (n_tokens).  Keys/values always span
+    // the full S = N + T tokens; queries span only the pool rows when
+    // pool_only (F-6: the x query rows would be discarded anyway).
     ggml_tensor * q = ggml_concat(ctx, pool_q, x_q, /*dim=*/2);     // (D_head, H, S, 1)
     ggml_tensor * k = ggml_concat(ctx, pool_k, x_k, /*dim=*/2);
     ggml_tensor * v = ggml_concat(ctx, pool_v, x_v, /*dim=*/2);
+    if (pool_only) q = pool_q;                                     // (D_head, H, N, 1)
 
     // Mixed RoPE: lower-half head_dim rotated by global positions, upper-half
-    // by region indices.
-    q = region_rope(ctx, q, RegionRopeMode::Mixed,
-                    global_positions, region_indices, nullptr, head_dim, theta);
+    // by region indices.  pool_only: q has only the N pool tokens, so the
+    // rope positions must be truncated to the first N (pool rows first).
+    if (pool_only) {
+        ggml_tensor * gpos_n = ggml_view_1d(ctx, global_positions, N, 0);
+        ggml_tensor * ridx_n = ggml_view_1d(ctx, region_indices, N, 0);
+        q = region_rope(ctx, q, RegionRopeMode::Mixed,
+                        gpos_n, ridx_n, nullptr, head_dim, theta);
+    } else {
+        q = region_rope(ctx, q, RegionRopeMode::Mixed,
+                        global_positions, region_indices, nullptr, head_dim, theta);
+    }
     k = region_rope(ctx, k, RegionRopeMode::Mixed,
                     global_positions, region_indices, nullptr, head_dim, theta);
 
-    // Permute to (head_dim, S, H, 1) for flash_attn_ext.
+    // Permute to (head_dim, tokens, H, 1) for flash_attn_ext.
     q = ggml_cont(ctx, ggml_permute(ctx, q, 0, 2, 1, 3));
     k = ggml_cont(ctx, ggml_permute(ctx, k, 0, 2, 1, 3));
     v = ggml_cont(ctx, ggml_permute(ctx, v, 0, 2, 1, 3));
 
+    // pool_only: query rows are the first N rows of the full S×S mask
+    // (ne[0]=k columns, ne[1]=q rows).  The strided view is not contiguous
+    // in general (inherited nb2), so materialise a contiguous N-row copy.
+    ggml_tensor * mask = attn_mask_fp16;
+    if (pool_only) {
+        ggml_tensor * mview = ggml_view_2d(ctx, attn_mask_fp16, S, N,
+            attn_mask_fp16->nb[1], 0);
+        mask = ggml_cont(ctx, mview);
+    }
+
     const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-    ggml_tensor * out = ggml_flash_attn_ext(ctx, q, k, v, attn_mask_fp16,
+    ggml_tensor * out = ggml_flash_attn_ext(ctx, q, k, v, mask,
         scale, /*max_bias=*/0.0f, /*logit_softcap=*/0.0f);
-    // out shape: (D_head, H, S, 1)
+    // out shape: (D_head, H, n_q, 1), n_q = S or N
 
-    // Flatten heads to (H*D_head, S, 1).
+    // Flatten heads to (H*D_head, n_q, 1).
     out = ggml_cont(ctx, out);
-    out = ggml_reshape_3d(ctx, out, Dtot, S, 1);
-
-    // Split back into pool (first N tokens) and x (last T tokens).
-    const std::size_t esize = ggml_element_size(out);
-    ggml_tensor * pool_chunk = ggml_view_3d(ctx, out,
-        Dtot, N, 1, out->nb[1], out->nb[2], 0);
-    ggml_tensor * x_chunk = ggml_view_3d(ctx, out,
-        Dtot, T, 1, out->nb[1], out->nb[2], N * out->nb[1]);
-    pool_chunk = ggml_cont(ctx, pool_chunk);
-    x_chunk    = ggml_cont(ctx, x_chunk);
+    out = ggml_reshape_3d(ctx, out, Dtot, pool_only ? N : S, 1);
 
     JoinResult r;
-    r.pool = linear(ctx, pool_chunk, W.w_pool_out, W.b_pool_out);
-    r.x    = linear(ctx, x_chunk,    W.w_x_out,    W.b_x_out);
+    if (pool_only) {
+        // The whole output is the pool stream — no view/split needed.
+        r.pool = linear(ctx, out, W.w_pool_out, W.b_pool_out);
+        r.x    = nullptr;
+    } else {
+        // Split back into pool (first N tokens) and x (last T tokens).
+        const std::size_t esize = ggml_element_size(out);
+        ggml_tensor * pool_chunk = ggml_view_3d(ctx, out,
+            Dtot, N, 1, out->nb[1], out->nb[2], 0);
+        ggml_tensor * x_chunk = ggml_view_3d(ctx, out,
+            Dtot, T, 1, out->nb[1], out->nb[2], N * out->nb[1]);
+        pool_chunk = ggml_cont(ctx, pool_chunk);
+        x_chunk    = ggml_cont(ctx, x_chunk);
+        r.pool = linear(ctx, pool_chunk, W.w_pool_out, W.b_pool_out);
+        r.x    = linear(ctx, x_chunk,    W.w_x_out,    W.b_x_out);
+    }
     return r;
 }
 
@@ -255,27 +282,23 @@ JoinResult pjac(
     ggml_tensor * attn_mask_fp16,
     int num_heads,
     int head_dim,
-    float theta)
+    float theta,
+    bool pool_only)
 {
     // Attention branch — applied to pool / x directly (JointAttention has its
-    // own pre-norm, so we don't pre-norm here).
+    // own pre-norm, so we don't pre-norm here).  pool_only restricts the
+    // attention to the N pool query rows.
     JoinResult a = joint_attention(ctx, pool, x, W.jattn,
         global_positions, region_indices, attn_mask_fp16,
-        num_heads, head_dim, theta);
+        num_heads, head_dim, theta, pool_only);
 
     // CgMLP branches — each has its own pre-norm.
     ggml_tensor * pool_cn = rms_norm(ctx, pool, W.w_c_norm_pool);
-    ggml_tensor * x_cn    = rms_norm(ctx, x,    W.w_c_norm_x);
     ggml_tensor * c_pool  = cgmlp(ctx, pool_cn,
         W.w_cg_pool_pw1, W.b_cg_pool_pw1, W.w_cg_pool_norm,
         W.w_cg_pool_dw,  W.b_cg_pool_dw,
         W.w_cg_pool_pw2, W.b_cg_pool_pw2,
         W.cg_pool_kernel);
-    ggml_tensor * c_x     = cgmlp(ctx, x_cn,
-        W.w_cg_x_pw1, W.b_cg_x_pw1, W.w_cg_x_norm,
-        W.w_cg_x_dw,  W.b_cg_x_dw,
-        W.w_cg_x_pw2, W.b_cg_x_pw2,
-        W.cg_x_kernel);
 
     // Merge per stream: [attn ; cgmlp] -> DW conv -> linear.
     auto merge_stream = [&](ggml_tensor * a_s, ggml_tensor * c_s,
@@ -297,6 +320,18 @@ JoinResult pjac(
     r.pool = merge_stream(a.pool, c_pool,
         W.w_merge_pool, W.b_merge_pool,
         W.w_merge_dw_pool, W.b_merge_dw_pool, W.merge_pool_kernel);
+    if (pool_only) {
+        // x stream has no consumer (F-6): skip the x-side CgMLP + merge
+        // entirely.
+        r.x = nullptr;
+        return r;
+    }
+    ggml_tensor * x_cn = rms_norm(ctx, x, W.w_c_norm_x);
+    ggml_tensor * c_x  = cgmlp(ctx, x_cn,
+        W.w_cg_x_pw1, W.b_cg_x_pw1, W.w_cg_x_norm,
+        W.w_cg_x_dw,  W.b_cg_x_dw,
+        W.w_cg_x_pw2, W.b_cg_x_pw2,
+        W.cg_x_kernel);
     r.x    = merge_stream(a.x, c_x,
         W.w_merge_x, W.b_merge_x,
         W.w_merge_dw_x, W.b_merge_dw_x, W.merge_x_kernel);
@@ -340,10 +375,14 @@ JoinResult jebf_block(
     ggml_tensor * attn_mask_fp16,
     int num_heads,
     int head_dim,
-    float theta)
+    float theta,
+    bool pool_only)
 {
     // --- FFN1 per stream ---
     if (W.has_ffn1) {
+        // pool_only still needs FFN1_x: the x stream feeds the attention
+        // keys (pool queries attend to the x keys), so x must carry the
+        // FFN1-updated values.  Only FFN2_x (no consumer) is skipped below.
         x    = apply_ffn_block(ctx, x,    W.w_norm_ffn1_x,
             W.w_ffn1_x_ln1, W.b_ffn1_x_ln1,
             W.w_ffn1_x_ln1_a, W.b_ffn1_x_ln1_a, W.w_ffn1_x_ln1_b, W.b_ffn1_x_ln1_b,
@@ -358,20 +397,23 @@ JoinResult jebf_block(
 
     // --- PJAC ---
     // F-2: lay_scale_jpac_{x,pool} folded into merge_linear_{x,pool} at load
-    // time, so the residual uses att.* directly.
+    // time, so the residual uses att.* directly.  pool_only: attention runs
+    // on the N pool query rows and the x stream is not produced.
     auto att = pjac(ctx, pool, x, W.pjac,
         global_positions, region_indices, attn_mask_fp16,
-        num_heads, head_dim, theta);
-    x    = ggml_add(ctx, x,    att.x);
+        num_heads, head_dim, theta, pool_only);
+    if (!pool_only) x = ggml_add(ctx, x, att.x);
     pool = ggml_add(ctx, pool, att.pool);
 
     // --- FFN2 per stream ---
     if (W.has_ffn2) {
-        x    = apply_ffn_block(ctx, x,    W.w_norm_ffn2_x,
-            W.w_ffn2_x_ln1, W.b_ffn2_x_ln1,
-            W.w_ffn2_x_ln1_a, W.b_ffn2_x_ln1_a, W.w_ffn2_x_ln1_b, W.b_ffn2_x_ln1_b,
-            W.w_ffn2_x_ln2, W.b_ffn2_x_ln2,
-            W.w_lay_scale_ffn2_x);
+        if (!pool_only) {
+            x    = apply_ffn_block(ctx, x,    W.w_norm_ffn2_x,
+                W.w_ffn2_x_ln1, W.b_ffn2_x_ln1,
+                W.w_ffn2_x_ln1_a, W.b_ffn2_x_ln1_a, W.w_ffn2_x_ln1_b, W.b_ffn2_x_ln1_b,
+                W.w_ffn2_x_ln2, W.b_ffn2_x_ln2,
+                W.w_lay_scale_ffn2_x);
+        }
         pool = apply_ffn_block(ctx, pool, W.w_norm_ffn2_pool,
             W.w_ffn2_pool_ln1, W.b_ffn2_pool_ln1,
             W.w_ffn2_pool_ln1_a, W.b_ffn2_pool_ln1_a, W.w_ffn2_pool_ln1_b, W.b_ffn2_pool_ln1_b,
