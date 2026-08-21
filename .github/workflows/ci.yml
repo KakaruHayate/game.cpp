@@ -121,12 +121,14 @@ jobs:
           - os: ubuntu-latest
             name: linux-x64-cpu
             backend: cpu
-            # Build ggml's CPU backend as ISA-variant shared libs
-            # (GGML_BACKEND_DL) with runtime dispatch instead of compiling
-            # -march=native into the shipped binary.  Native builds capture
-            # the runner's CPU (e.g. AVX-512) and crash with illegal
-            # instructions on older user CPUs.
-            cmake_extra: "-DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON"
+            # ggml v0.20.2 turns GGML_BACKEND_DL into MODULE plugins (dlopen'd,
+            # not linked into the ggml umbrella target), so game.cpp's direct
+            # references to ggml_backend_cpu_init / ggml_threadpool_new etc.
+            # fail to link.  Keep the umbrella-target link (DL off) and get
+            # portable binaries from GGML_NATIVE=OFF + GGML_CPU_ALL_VARIANTS=ON
+            # (all ISA variants built, runtime dispatch by cpu_features) instead
+            # of compiling -march=native into the shipped binary.
+            cmake_extra: "-DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON"
             build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.so*"
