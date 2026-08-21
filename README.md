@@ -178,16 +178,18 @@ keeps it cheap; bump to `4` or `8` for higher quality at linear cost.
 
 ### DBCache (multi-step acceleration, default on)
 
-For `--nsteps > 1`, a cross-step DBCache is **on by default on CPU**
-(threshold 0.25, front blocks 1, warmup 1): when the segmenter's front-block
-residual between consecutive D3PM steps is below the threshold, the tail
-blocks are skipped and the previous step's tail delta is reused — a
-near-lossless approximation (~0.2–0.3 cents pitch drift, no note-count change
-in the ablation) that cuts nsteps=8 segmenter wall time roughly in half.
+For `--nsteps > 1`, a cross-step DBCache is **on by default on every
+backend** (threshold 0.25, front blocks 1, warmup 1): when the segmenter's
+front-block residual between consecutive D3PM steps is below the
+threshold, the tail blocks are skipped and the previous step's tail delta
+is reused — a near-lossless approximation (~0.2–0.3 cents pitch drift, no
+note-count change in the ablation) that cuts nsteps=8 segmenter wall time
+roughly in half.
 
-On GPU backends (Vulkan/Metal/CUDA) it defaults **off**, because the
-split-path host round-trips regress quantized-weight graphs (measured +20% on
-Vulkan+Q8); set an explicit threshold to enable it there.
+On GPU backends (Vulkan/Metal/CUDA) it is also **on by default**: the
+device-side cache decision (B) removed the per-step host round-trip that
+used to regress quantized-weight graphs, so the same 0.25 threshold
+applies everywhere. Set `--cache-threshold 0` to disable.
 
 - Tuning: `--cache-threshold <float>` (auto / 0 = off / 0.25...),
   `--cache-fn-blocks <int>`, `--cache-warmup <int>`.

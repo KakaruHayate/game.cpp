@@ -158,12 +158,12 @@ Segmenter 占主导，因为 D3PM 循环 `--nsteps` 次。默认 `1` 保持低�
 
 ### DBCache（多步加速，默认开启）
 
-CPU 上 `--nsteps > 1` 默认开启跨步 DBCache（阈值 0.25 / 前置块 1 / 预热 1）：连续两步的
+所有后端 `--nsteps > 1` 默认开启跨步 DBCache（阈值 0.25 / 前置块 1 / 预热 1）：连续两步的
 segmenter 前置块残差低于阈值时跳过尾部块、复用上一步的 tail delta——近无损近似
 （音准漂移 ~0.2–0.3 cent，音符数不变），nsteps=8 时 segmenter 墙钟约减半。
 
-GPU 后端（Vulkan/Metal/CUDA）默认**关闭**：分离路径每步的 host 往返拷贝对量化权重
-反而回退（Vulkan+Q8 实测 +20%）；需要时显式设阈值开启。
+GPU 后端（Vulkan/Metal/CUDA）同样默认**开启**：设备侧缓存判定（B）消除了每步的 host
+往返，不再对量化权重回退，统一使用 0.25 阈值；`--cache-threshold 0` 可关闭。
 
 - 调参：`--cache-threshold <float>`（auto / 0 = 关闭 / 0.25…）、
   `--cache-fn-blocks <int>`、`--cache-warmup <int>`

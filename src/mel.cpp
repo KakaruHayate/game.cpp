@@ -139,45 +139,64 @@ std::vector<float> MelExtractor::forward(const float * wav, std::size_t n) const
 
     std::vector<float> out(static_cast<std::size_t>(T) * n_mels);
 
-    pocketfft::shape_t   shape      = {static_cast<std::size_t>(n_fft)};
-    pocketfft::stride_t  stride_in  = {sizeof(float)};
-    pocketfft::stride_t  stride_out = {sizeof(std::complex<float>)};
-    pocketfft::shape_t   axes       = {0};
-
     // Frames are independent — split the range into contiguous stripes and
     // process them on a small worker pool.  At ~1000+ frames per 10 s clip
     // this is several ms of single-threaded work that parallelizes cleanly.
     // Guard the pool size by frame count so short clips never pay for
     // threads they don't use.
+    //
+    // Each worker runs its stripe as ONE batched pocketfft r2c (2-D shape
+    // {n_fft, block}, FFT along axis 0) instead of one r2c call per frame —
+    // pocketfft builds its twiddle table per call, so this amortises that
+    // cost over the whole stripe (E: batched FFT).  Per-frame results are
+    // identical: the extra dimension is only iterated.
     unsigned hw = std::thread::hardware_concurrency();
     if (hw == 0) hw = 1;
     const int want  = static_cast<int>(std::min<unsigned>(hw, 8u));
     const int n_thr = std::max(1, std::min(want, T / 128 + 1));
 
     auto worker = [&](int t_begin, int t_end) {
-        std::vector<float>               frame(n_fft, 0.0f);
-        std::vector<std::complex<float>> spec(n_bins);
-        std::vector<float>               mag(n_bins);
+        const int block = t_end - t_begin;
+        std::vector<float> frame2d(static_cast<std::size_t>(n_fft) * block);
+        std::vector<std::complex<float>> spec2d(
+            static_cast<std::size_t>(n_bins) * block);
+
+        // Windowing: fill the 2-D [n_fft, block] input (frames are column
+        // contiguous; windowed region is [0, win), rest zero).
         for (int t = t_begin; t < t_end; ++t) {
             const std::size_t off = static_cast<std::size_t>(t) * hop;
-            std::fill(frame.begin(), frame.end(), 0.0f);
-            for (int k = 0; k < win; ++k) frame[k] = padded[off + k] * window[k];
+            float * dst = frame2d.data() +
+                static_cast<std::size_t>(t - t_begin) * n_fft;
+            for (int k = 0; k < win; ++k) dst[k] = padded[off + k] * window[k];
+            std::fill(dst + win, dst + n_fft, 0.0f);
+        }
 
-            pocketfft::r2c(shape, stride_in, stride_out, axes, pocketfft::FORWARD,
-                           frame.data(), spec.data(), 1.0f);
-            // Plain sqrt (not std::hypot): no overflow risk at FFT output
-            // magnitudes, and matches torch/librosa's |·| semantics within
-            // 1 ulp while running several times faster.
-            for (int k = 0; k < n_bins; ++k) {
-                const float re = spec[k].real(), im = spec[k].imag();
-                mag[k] = std::sqrt(re * re + im * im);
-            }
+        pocketfft::shape_t  sh  = {static_cast<std::size_t>(n_fft),
+                                   static_cast<std::size_t>(block)};
+        // stride_t is vector<ptrdiff_t>: sizeof() yields size_t, which clang
+        // rejects as a narrowing conversion in the initializer list.
+        pocketfft::stride_t si  = {static_cast<std::ptrdiff_t>(sizeof(float)),
+                                   static_cast<std::ptrdiff_t>(sizeof(float) * n_fft)};
+        pocketfft::stride_t so  = {static_cast<std::ptrdiff_t>(sizeof(std::complex<float>)),
+                                   static_cast<std::ptrdiff_t>(sizeof(std::complex<float>) * n_bins)};
+        pocketfft::shape_t  ax  = {0};
+        pocketfft::r2c(sh, si, so, ax, pocketfft::FORWARD,
+                       frame2d.data(), spec2d.data(), 1.0f);
 
+        for (int t = t_begin; t < t_end; ++t) {
+            const auto * sp = spec2d.data() +
+                static_cast<std::size_t>(t - t_begin) * n_bins;
             float * dst = out.data() + static_cast<std::size_t>(t) * n_mels;
             for (int m = 0; m < n_mels; ++m) {
                 const float * row = mel_fb.data() + static_cast<std::size_t>(m) * n_bins;
                 float acc = 0.0f;
-                for (int k = 0; k < n_bins; ++k) acc += row[k] * mag[k];
+                for (int k = 0; k < n_bins; ++k) {
+                    // Plain sqrt (not std::hypot): no overflow risk at FFT
+                    // output magnitudes, and matches torch/librosa's |·|
+                    // semantics within 1 ulp while running faster.
+                    const float re = sp[k].real(), im = sp[k].imag();
+                    acc += row[k] * std::sqrt(re * re + im * im);
+                }
                 dst[m] = std::log(std::max(acc, cfg.clip_val));
             }
         }

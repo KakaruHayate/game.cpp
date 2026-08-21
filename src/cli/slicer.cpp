@@ -130,7 +130,12 @@ std::vector<SliceChunk> slice_waveform(
     }
 
     if (silence_start >= 0 && n_frames - silence_start >= min_interval) {
-        const int silence_end = std::min<int>(n_frames, silence_start + max_sil_kept);
+        // Bounded argmin window: silence_end must be a valid rms index
+        // (0..n_frames-1).  The old `min(n_frames, ...)` let the argmin read
+        // rms[n_frames] — one past the end, an uninitialised heap value whose
+        // luck-of-the-draw minimum flipped the trailing-silence cut position
+        // between runs (e.g. 452 vs 501 -> 9.04 s vs 10.0 s chunks).
+        const int silence_end = std::min<int>(n_frames - 1, silence_start + max_sil_kept);
         const int pos = static_cast<int>(argmin(rms.data() + silence_start,
             silence_end - silence_start + 1)) + silence_start;
         sil_tags.push_back({pos, n_frames + 1});
