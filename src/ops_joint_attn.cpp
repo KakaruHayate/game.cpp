@@ -244,7 +244,6 @@ JoinResult joint_attention(
         r.x    = nullptr;
     } else {
         // Split back into pool (first N tokens) and x (last T tokens).
-        const std::size_t esize = ggml_element_size(out);
         ggml_tensor * pool_chunk = ggml_view_3d(ctx, out,
             Dtot, N, 1, out->nb[1], out->nb[2], 0);
         ggml_tensor * x_chunk = ggml_view_3d(ctx, out,

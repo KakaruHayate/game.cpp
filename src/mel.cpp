@@ -173,10 +173,12 @@ std::vector<float> MelExtractor::forward(const float * wav, std::size_t n) const
 
         pocketfft::shape_t  sh  = {static_cast<std::size_t>(n_fft),
                                    static_cast<std::size_t>(block)};
-        pocketfft::stride_t si  = {sizeof(float),
-                                   sizeof(float) * static_cast<std::size_t>(n_fft)};
-        pocketfft::stride_t so  = {sizeof(std::complex<float>),
-                                   sizeof(std::complex<float>) * static_cast<std::size_t>(n_bins)};
+        // stride_t is vector<ptrdiff_t>: sizeof() yields size_t, which clang
+        // rejects as a narrowing conversion in the initializer list.
+        pocketfft::stride_t si  = {static_cast<std::ptrdiff_t>(sizeof(float)),
+                                   static_cast<std::ptrdiff_t>(sizeof(float) * n_fft)};
+        pocketfft::stride_t so  = {static_cast<std::ptrdiff_t>(sizeof(std::complex<float>)),
+                                   static_cast<std::ptrdiff_t>(sizeof(std::complex<float>) * n_bins)};
         pocketfft::shape_t  ax  = {0};
         pocketfft::r2c(sh, si, so, ax, pocketfft::FORWARD,
                        frame2d.data(), spec2d.data(), 1.0f);
