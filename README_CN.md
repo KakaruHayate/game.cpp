@@ -48,10 +48,10 @@ waveform (44100 Hz mono)
 ## 构建
 
 ```bash
-cmake -S ggml_backend -B ggml_backend/build \
+cmake -S . -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DGAME_GGML_BUILD_TESTS=ON
-cmake --build ggml_backend/build -j
+cmake --build build -j
 ```
 
 选项：
@@ -67,10 +67,10 @@ cmake --build ggml_backend/build -j
 ## 转换 PyTorch checkpoint
 
 ```bash
-pip install -r ggml_backend/scripts/requirements.txt
-python ggml_backend/scripts/convert_pt_to_gguf.py \
+pip install -r scripts/requirements.txt
+python scripts/convert_pt_to_gguf.py \
     --model-dir GAME-pt-1.0-medium \
-    -o ggml_backend/assets/game_medium.gguf
+    -o game_medium.gguf
 ```
 
 脚本读取指定目录下的 `model.pt` + `config.yaml` + `lang_map.json`，写出单个 GGUF（含全部 671 个 tensor（FP32）与 74 个 metadata KV）。
@@ -78,14 +78,14 @@ python ggml_backend/scripts/convert_pt_to_gguf.py \
 检查结果：
 
 ```bash
-./ggml_backend/build/bin/game_ggml_cli inspect ggml_backend/assets/game_medium.gguf
+./build/bin/game_ggml_cli inspect game_medium.gguf
 ```
 
 ## 运行推理
 
 ```bash
-./ggml_backend/build/bin/game_ggml_cli extract input.wav \
-    -m ggml_backend/assets/game_medium.gguf \
+./build/bin/game_ggml_cli extract input.wav \
+    -m game_medium.gguf \
     --output-formats mid,txt,csv \
     --output-dir out/ \
     --tempo 120 \
@@ -188,6 +188,24 @@ GPU 后端（Vulkan/Metal/CUDA）同样默认**开启**：设备侧缓存判定�
 - CPU 用 `-q8` 包（省内存、速度基本持平）。
 - 冷启动：GPU 首次推理要编译 shader（Vulkan/Metal）。NVIDIA 驱动会跨进程缓存，仅首次调用多耗几秒。
 
+## OpenUtau 集成（.oudep）
+
+供 OpenUtau 使用的插件以 `.oudep` 压缩包分发（zip，内含 `game_ggml_cli` +
+`game_medium.gguf` + `config.json` + `oudep.yaml`），见
+[GitHub Releases](https://github.com/KakaruHayate/game.cpp/releases)。按你的
+平台安装即可，OpenUtau 会自动解包。
+
+| OpenUtau 版本 | 应安装的包 |
+|---|---|
+| **新版**（新的 serve-API 协议） | `game_ggml-<平台>.oudep` 或 `-q8`——取**最新** Release（如 `v0.1.3`）。该包使用当前的 serve 协议（`src/cli/main.cpp`，`game_ggml_cli serve`）。 |
+| **早期**（旧 API 规范） | `old_game_ggml-<平台>.oudep` —— 仅存于 [`v0.1.0` Release](https://github.com/KakaruHayate/game.cpp/releases/tag/v0.1.0)。 |
+
+> 如果（较旧的）OpenUtau 连不上引擎，说明你走的是旧 API 规范——请下载
+> **`old_` 前缀**的 `.oudep`（v0.1.0），而不是最新 Release 里的包。
+
+平台：`windows-x64-vulkan`、`linux-x64-vulkan`、
+`macos-arm64-metal`、`macos-x64-metal`（old 前缀集合）。
+
 ## 复现基准测试
 
 ```bash
@@ -198,17 +216,17 @@ y, _ = librosa.load('28.wav', sr=44100, mono=True)
 sf.write('/tmp/28_44100.wav', y, 44100, subtype='PCM_16')"
 
 # 2. 捕获 PyTorch 的 D3PM RNG 流（同时产出参考 MIDI）
-python3 ggml_backend/scripts/align_demo.py /tmp/28_44100.wav \
+python3 scripts/align_demo.py /tmp/28_44100.wav \
     -m GAME-pt-1.0-medium/model.pt \
-    -g ggml_backend/assets/game_medium.gguf \
-    --cli ggml_backend/build/bin/game_ggml_cli \
+    -g game_medium.gguf \
+    --cli build/bin/game_ggml_cli \
     -l zh -o /tmp/align_out
 
 # 3. 运行 3-per-side 子进程隔离基准
-python3 ggml_backend/scripts/benchmark_align.py /tmp/28_44100.wav \
+python3 scripts/benchmark_align.py /tmp/28_44100.wav \
     -m GAME-pt-1.0-medium/model.pt \
-    -g ggml_backend/assets/game_medium.gguf \
-    --cli ggml_backend/build/bin/game_ggml_cli \
+    -g game_medium.gguf \
+    --cli build/bin/game_ggml_cli \
     --rng /tmp/align_out/align_rng.bin \
     -l zh -o /tmp/bench_out --runs 3
 ```
@@ -216,7 +234,7 @@ python3 ggml_backend/scripts/benchmark_align.py /tmp/28_44100.wav \
 ## 作为第三方库使用
 
 ```cmake
-add_subdirectory(path/to/GAME/ggml_backend)
+add_subdirectory(path/to/game.cpp)
 
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE game_ggml::game_ggml)
@@ -261,7 +279,7 @@ int main() {
 ## 测试
 
 ```bash
-ctest --test-dir ggml_backend/build --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
 
 套件共 37 个测试，覆盖：后端初始化、GGUF I/O round-trip、每个算子（RMSNorm、Linear、LayerScale、Embedding、GLU-FFN、CgMLP、三种模式 RoPE、Attention、PAC、EBF block）、Encoder/Segmenter/Estimator 端到端 vs PyTorch 参考 dump、D3PM 8-step 注入 RNG 逐位一致（容忍 Metal FP32 漂移引起的 ≤2/100 边界翻转）、mel 频谱 vs `lib.feature.mel.StretchableMelSpectrogram`、Slicer、MIDI 写入器、TXT/CSV 文本写入器、全流水线逐位 E2E。

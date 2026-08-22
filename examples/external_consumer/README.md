@@ -12,9 +12,9 @@ examples/external_consumer/
 
 ```bash
 # From the repo root:
-cmake -S ggml_backend/examples/external_consumer -B /tmp/consumer
+cmake -S examples/external_consumer -B /tmp/consumer
 cmake --build /tmp/consumer -j
-/tmp/consumer/my_app ggml_backend/assets/game_small.gguf /path/to/input.wav
+/tmp/consumer/my_app game_small.gguf /path/to/input.wav
 ```
 
 ## What it illustrates
@@ -29,10 +29,10 @@ cmake --build /tmp/consumer -j
    broader format support.
 
 The model's backend (CPU / Metal / CUDA / Vulkan) is inherited from the parent
-`ggml_backend/` build configuration.  To override, pass the relevant flags
+`your build configuration.  To override, pass the relevant flags
 when you configure:
 
 ```bash
-cmake -S ggml_backend/examples/external_consumer -B /tmp/consumer \
+cmake -S examples/external_consumer -B /tmp/consumer \
       -DGAME_GGML_METAL=OFF           # CPU-only build
 ```

@@ -1,4 +1,4 @@
-# `ggml_backend/scripts/`
+# `scripts/`
 
 Python helpers that complement the C++ binaries.  All scripts assume they are
 run from the repo root and have `torch`, `numpy`, `gguf`, `pyyaml`,
@@ -15,28 +15,28 @@ run from the repo root and have `torch`, `numpy`, `gguf`, `pyyaml`,
 ## Typical workflow
 
 ```bash
-pip install -r ggml_backend/scripts/requirements.txt
+pip install -r scripts/requirements.txt
 
 # one-time: produce the GGUF for the C++ backend
-python ggml_backend/scripts/convert_pt_to_gguf.py \
+python scripts/convert_pt_to_gguf.py \
     --model-dir GAME-pt-1.0-small \
-    -o ggml_backend/assets/game_small.gguf
+    -o game_small.gguf
 
 # each time you touch a C++ op: regenerate the reference dumps so tests pass
-python ggml_backend/scripts/dump_reference.py --category all --out ggml_backend/tests/data
+python scripts/dump_reference.py --category all --out tests/data
 
 # one-off: verify bit-exact alignment on a real clip
-python ggml_backend/scripts/align_demo.py /path/to/your.wav \
+python scripts/align_demo.py /path/to/your.wav \
     -m GAME-pt-1.0-small/model.pt \
-    -g ggml_backend/assets/game_small.gguf \
-    --cli ggml_backend/build/bin/game_ggml_cli \
+    -g game_small.gguf \
+    --cli build/bin/game_ggml_cli \
     -l zh -o /tmp/align_out
 
 # one-off: speed + memory benchmark (reuses align_rng.bin from align_demo)
-python ggml_backend/scripts/benchmark_align.py /path/to/your.wav \
+python scripts/benchmark_align.py /path/to/your.wav \
     -m GAME-pt-1.0-small/model.pt \
-    -g ggml_backend/assets/game_small.gguf \
-    --cli ggml_backend/build/bin/game_ggml_cli \
+    -g game_small.gguf \
+    --cli build/bin/game_ggml_cli \
     --rng /tmp/align_out/align_rng.bin \
     -l zh -o /tmp/bench_out --runs 3
 ```
