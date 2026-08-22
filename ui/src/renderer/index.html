@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; style-src 'unsafe-inline'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'">
   <title>GAME MIDI Studio</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -41,7 +41,7 @@
     <h2>Inference settings</h2>
     <div class="grid">
       <div class="field">
-        <label>tempo</label>
+        <label>bpm</label>
         <input id="in-tempo" type="number" min="20" max="400" value="120">
       </div>
       <div class="field">
@@ -87,7 +87,13 @@
       <span id="runDot" class="dot"></span>
       <span id="render-status">idle</span>
     </div>
-    <canvas id="roll" width="800" height="200"></canvas>
+    <div class="zoom-row status-row">
+      <label for="zoom">zoom <span id="zoomVal">60</span> px/s</label>
+      <input id="zoom" type="range" min="12" max="200" step="1" value="60">
+    </div>
+    <div class="roll-scroll">
+      <canvas id="roll" width="800" height="200"></canvas>
+    </div>
     <pre id="log">[ready]</pre>
   </section>
 

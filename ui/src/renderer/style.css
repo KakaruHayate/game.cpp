@@ -99,9 +99,25 @@ button.ghost:hover:not(:disabled) { background: #f3f3f3; opacity: 1; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 canvas {
-  display: block; width: 100%; height: auto;
+  display: block;
   margin-top: 0.8em; border: 1px solid var(--border); border-radius: 8px; background: var(--card);
 }
+input[type=range] {
+  -webkit-appearance: none; appearance: none; width: 180px; height: 6px; border-radius: 999px;
+  background: #ddd; outline: none; cursor: pointer;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3);
+}
+.zoom-row { margin-top: 0.8em; }
+.zoom-row label { margin: 0; }
+#waveform { width: 100%; height: 140px; }
+.roll-scroll {
+  margin-top: 0.8em; overflow: auto; max-height: 340px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+}
+.roll-scroll canvas { margin: 0; border: none; border-radius: 0; }
 
 #log {
   white-space: pre-wrap; background: #151515; color: #d0d0d0;

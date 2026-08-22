@@ -11,6 +11,7 @@ const S = {
   audioName: '',
   render: null,   // { midPath, txtPath, outRoot }
   viz: null,      // { notes:[{o,d,p}], duration }
+  zoom: 60,       // px/s piano-roll zoom
 };
 const $ = (id) => document.getElementById(id);
 const pathBase = (p) => (p.replace(/\\/g, '/').split('/').pop() || p);
@@ -140,7 +141,7 @@ $('btn-render').onclick = async () => {
     S.render = r;
     const notes = r.midPath ? await window.bridge.readMidiNotes(r.midPath) : null;
     S.viz = notes && notes.notes ? notes : { notes: [], duration: 0 };
-    if (S.viz.notes.length) { drawRoll(S.viz.notes, S.viz.duration); log(`notes=${S.viz.notes.length}`); }
+    if (S.viz.notes.length) { drawRoll(S.viz.notes, S.viz.duration, S.zoom); log(`notes=${S.viz.notes.length}`); }
     else { log('render ok, 0 notes'); clearCanvas($('roll')); }
     $('render-status').textContent = `done · ${S.viz.notes.length} notes · ${r.midPath ? 'mid ✓' : '(no mid)'}`;
     $('btn-export').disabled = !r.midPath;
@@ -168,10 +169,11 @@ function clearCanvas(canvas) { const c = canvas.getContext('2d'); c.clearRect(0,
 
 function drawWaveform(samples) {
   const cv = $('waveform'), ctx = cv.getContext('2d');
-  cv.width = Math.max(320, Math.floor((cv.clientWidth || 800) * (window.devicePixelRatio || 1)));
-  cv.height = 72;
+  const cssW = Math.max(320, Math.floor(cv.clientWidth || 800));
+  cv.width = cssW; cv.height = 140;
   ctx.clearRect(0, 0, cv.width, cv.height);
-  ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = '#f6f6f6'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.strokeStyle = '#ddd'; ctx.beginPath(); ctx.moveTo(0, cv.height/2); ctx.lineTo(cv.width, cv.height/2); ctx.stroke();
   const n = samples.length, step = Math.max(1, Math.floor(n / cv.width));
   ctx.fillStyle = '#111';
   for (let x = 0; x < cv.width; x++) {
@@ -182,14 +184,17 @@ function drawWaveform(samples) {
 }
 
 const PITCH_LO = 21, PITCH_HI = 108;
-const KEY_W = 64, RULER = 22, ROW_H = 14;
-function drawRoll(notes, duration) {
+const KEY_W = 64, RULER = 24, ROW_H = 16;
+function drawRoll(notes, duration, zoom) {
   const cv = $('roll');
   if (!duration || duration <= 0) duration = Math.max(...notes.map(n => n.o + n.d)) + 0.1;
-  const pxPerSec = Math.max(20, (cv.clientWidth - KEY_W) / duration);
+  // zoom (px/s) may be user-set via the slider; otherwise a fixed floor so
+  // long audio produces a genuinely wide scrollable canvas (never compressed
+  // to one screen).
+  const pxPerSec = (typeof zoom === 'number' && zoom > 0) ? zoom : Math.max(24, 480 / Math.max(duration, 4));
   const totalMin = Math.min(...notes.map(n => n.p)), totalMax = Math.max(...notes.map(n => n.p));
   const lo = Math.max(PITCH_LO, totalMin - 3), hi = Math.min(PITCH_HI, totalMax + 3);
-  const W = KEY_W + Math.ceil(duration * pxPerSec);
+  const W = Math.max(800, Math.round(KEY_W + duration * pxPerSec));
   const H = RULER + (hi - lo + 1) * ROW_H;
   cv.width = W; cv.height = H;
   const ctx = cv.getContext('2d');
@@ -226,6 +231,13 @@ function drawRoll(notes, duration) {
     ctx.fillRect(nx, y(n.p), nw, ROW_H - 1);
   }
 }
+
+const zoomEl = $('zoom');
+if (zoomEl) zoomEl.addEventListener('input', () => {
+  const z = Number(zoomEl.value) || 60;
+  S.zoom = z; const v = $('zoomVal'); if (v) v.textContent = z;
+  if (S.viz && S.viz.notes.length) drawRoll(S.viz.notes, S.viz.duration, z);
+});
 
 // init
 window.addEventListener('DOMContentLoaded', async () => {
