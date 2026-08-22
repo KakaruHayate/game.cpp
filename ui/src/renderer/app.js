@@ -234,22 +234,24 @@ function drawRoll(notes) {
   const x = t => KEY_W + t * S.zoom;
 
   clampViewX();
-  ctx.clearRect(0, 0, VW, ROLL_H);
-  ctx.save();
-  ctx.beginPath(); ctx.rect(0, 0, VW, ROLL_H); ctx.clip();
-  ctx.translate(-S.viewX, 0);
 
-  // pitch rows
-  ctx.fillStyle = '#fafafa'; ctx.fillRect(KEY_W, 0, VW, ROLL_H);
+  // --- static background: full-bleed zebra pitch rows (canvas coords, no
+  // translate) so they ALWAYS cover the whole viewport regardless of pan. ---
+  ctx.clearRect(0, 0, VW, ROLL_H);
+  ctx.fillStyle = '#fafafa'; ctx.fillRect(KEY_W, 0, VW - KEY_W, ROLL_H);
   for (let p = lo; p <= hi; p++) {
     const isBlack = [1, 3, 6, 8, 10].includes((p + 60) % 12);
     ctx.fillStyle = isBlack ? '#f0f0f0' : '#fafafa';
-    ctx.fillRect(KEY_W, y(p), VW, rowH);
+    ctx.fillRect(KEY_W, y(p), VW - KEY_W, rowH);
   }
-  // time grid (visible window only)
+
+  // --- time-dependent layer (grid / ruler / notes) translated by pan ---
   const t0 = S.viewX / S.zoom;
   const t1 = Math.min(duration, t0 + VW / S.zoom);
   const tStep = tickStep(S.zoom);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(KEY_W, 0, VW - KEY_W, ROLL_H); ctx.clip();
+  ctx.translate(-S.viewX, 0);
   ctx.strokeStyle = '#ececec'; ctx.lineWidth = 1;
   ctx.fillStyle = '#666'; ctx.font = '10px system-ui';
   for (let t = Math.floor(t0 / tStep) * tStep; t <= t1 + 1e-3; t += tStep) {
@@ -260,16 +262,6 @@ function drawRoll(notes) {
   for (let t = Math.floor(t0 / tStep) * tStep; t <= t1 + 1e-3; t += tStep) {
     ctx.fillText(fmtT(t), x(t) + 3, RULER - 6);
   }
-  // keyboard lane + labels
-  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, KEY_W, ROLL_H);
-  ctx.font = '9px ui-monospace, monospace';
-  const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-  for (let p = lo; p <= hi; p++) {
-    const nm = names[(p + 60) % 12];
-    if (nm.includes('#')) continue;
-    ctx.fillStyle = '#888'; ctx.fillText(`${nm}${Math.floor(p / 12) - 1}`, 6, y(p) + rowH - 3);
-  }
-  // notes (visible)
   ctx.fillStyle = '#2b7a3c';
   for (const n of notes) {
     if (n.p < lo || n.p > hi) continue;
@@ -277,6 +269,18 @@ function drawRoll(notes) {
     ctx.fillRect(x(n.o), y(n.p), Math.max(2, n.d * S.zoom - 1), rowH - 1);
   }
   ctx.restore();
+
+  // keyboard lane + labels (static, canvas coords)
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, KEY_W, ROLL_H);
+  ctx.strokeStyle = '#e0e0e0'; ctx.beginPath(); ctx.moveTo(KEY_W, 0); ctx.lineTo(KEY_W, ROLL_H); ctx.stroke();
+  ctx.font = '9px ui-monospace, monospace';
+  const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  ctx.fillStyle = '#888';
+  for (let p = lo; p <= hi; p++) {
+    const nm = names[(p + 60) % 12];
+    if (nm.includes('#')) continue;
+    ctx.fillText(`${nm}${Math.floor(p / 12) - 1}`, 6, y(p) + rowH - 3);
+  }
 
   // skinny position indicator (thumb = viewport over full extent)
   const ext = Math.max(VW, rollExtent());
