@@ -96,11 +96,17 @@ endif()
 # > target (link errors), and NATIVE + DL are mutually exclusive upstream.
 # > The CI linux-x64-cpu job is GGML_NATIVE=ON because of this anchor.
 # ---------------------------------------------------------------------------
+# URL archive (not GIT): with FETCHCONTENT_UPDATES_DISCONNECTED=ON the
+# populate gitupdate step must resolve the pinned ref locally, and a fresh
+# shallow clone cannot — a tag a few commits behind main is not on it, so
+# populate aborts with "ref not present locally".  GPU CI jobs also restore
+# a stale _deps cache whose ggml-populate dir has no .git (URL download),
+# and a GIT pin fails there with "not a git repository: '.git'"; URL keeps
+# those cached builds working.  Patches still apply via `git apply` --check.
 FetchContent_Declare(
     ggml
-    GIT_REPOSITORY https://github.com/ggerganov/ggml.git
-    GIT_TAG        v0.19.0
-    GIT_SHALLOW    TRUE
+    URL      https://github.com/ggerganov/ggml/archive/refs/tags/v0.19.0.tar.gz
+    URL_HASH SHA256=cfb6512adda2853e6500a7c5b23f326987cb4c723e9f8f93c6c5a7e7e4861648
 )
 
 FetchContent_GetProperties(ggml)

@@ -43,10 +43,10 @@ ggml_tensor * glu_ffn(ggml_context * ctx,
     return linear(ctx, y, w_ln2, b_ln2);
 }
 
-// F-1: split-halves variant — the ln1 weight/bias were split into two
-// contiguous [in, L] / [L] pieces at load time, so the two mul_mats output
-// contiguous [L, T, B] activations and the strided-view + 2x cont of the
-// monolithic path disappear.
+// Split-halves GLU: the ln1 weight/bias were split into two contiguous
+// [in, L] / [L] pieces at load time, so the two mul_mats output contiguous
+// [L, T, B] activations and the strided-view + 2x cont of the monolithic
+// path disappear.
 ggml_tensor * glu_ffn_split(ggml_context * ctx,
                             ggml_tensor * x,
                             ggml_tensor * w_ln1_a, ggml_tensor * b_ln1_a,

@@ -192,7 +192,7 @@ JoinResult joint_attention(
 
     // Concatenate pool and x along ne[2] (n_tokens).  Keys/values always span
     // the full S = N + T tokens; queries span only the pool rows when
-    // pool_only (F-6: the x query rows would be discarded anyway).
+    // pool_only (the x query rows would be discarded anyway).
     ggml_tensor * q = ggml_concat(ctx, pool_q, x_q, /*dim=*/2);     // (D_head, H, S, 1)
     ggml_tensor * k = ggml_concat(ctx, pool_k, x_k, /*dim=*/2);
     ggml_tensor * v = ggml_concat(ctx, pool_v, x_v, /*dim=*/2);
@@ -320,8 +320,7 @@ JoinResult pjac(
         W.w_merge_pool, W.b_merge_pool,
         W.w_merge_dw_pool, W.b_merge_dw_pool, W.merge_pool_kernel);
     if (pool_only) {
-        // x stream has no consumer (F-6): skip the x-side CgMLP + merge
-        // entirely.
+        // x stream has no consumer: skip the x-side CgMLP + merge entirely.
         r.x = nullptr;
         return r;
     }
@@ -349,12 +348,12 @@ ggml_tensor * apply_ffn_block(ggml_context * ctx, ggml_tensor * x,
     ggml_tensor * w_ln2, ggml_tensor * b_ln2,
     ggml_tensor * w_lay_scale)
 {
-    // F-2: lay_scale is folded into the ln2 linear at load time
+    // lay_scale is folded into the ln2 linear at load time
     // (tensor_utils.cpp), so w_lay_scale is intentionally unused here.
     (void)w_lay_scale;
     ggml_tensor * h = rms_norm(ctx, x, w_norm);
     if (w_ln1_a) {
-        // F-1: pre-split ln1 halves — two mul_mats, no cont copies.
+        // pre-split ln1 halves — two mul_mats, no cont copies.
         h = glu_ffn_split(ctx, h, w_ln1_a, b_ln1_a, w_ln1_b, b_ln1_b, w_ln2, b_ln2);
     } else {
         h = glu_ffn(ctx, h, w_ln1, b_ln1, w_ln2, b_ln2);
@@ -395,9 +394,9 @@ JoinResult jebf_block(
     }
 
     // --- PJAC ---
-    // F-2: lay_scale_jpac_{x,pool} folded into merge_linear_{x,pool} at load
-    // time, so the residual uses att.* directly.  pool_only: attention runs
-    // on the N pool query rows and the x stream is not produced.
+    // lay_scale_jpac_{x,pool} are folded into merge_linear_{x,pool} at load
+    // time, so the residual uses att.* directly.  pool_only: attention runs on
+    // the N pool query rows and the x stream is not produced.
     auto att = pjac(ctx, pool, x, W.pjac,
         global_positions, region_indices, attn_mask_fp16,
         num_heads, head_dim, theta, pool_only);
