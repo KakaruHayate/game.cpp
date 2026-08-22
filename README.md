@@ -58,10 +58,10 @@ waveform (44100 Hz mono)
 ## Build
 
 ```bash
-cmake -S ggml_backend -B ggml_backend/build \
+cmake -S . -B build \
       -DCMAKE_BUILD_TYPE=Release \
       -DGAME_GGML_BUILD_TESTS=ON
-cmake --build ggml_backend/build -j
+cmake --build build -j
 ```
 
 Options:
@@ -77,10 +77,10 @@ Options:
 ## Convert a PyTorch checkpoint
 
 ```bash
-pip install -r ggml_backend/scripts/requirements.txt
-python ggml_backend/scripts/convert_pt_to_gguf.py \
+pip install -r scripts/requirements.txt
+python scripts/convert_pt_to_gguf.py \
     --model-dir GAME-pt-1.0-medium \
-    -o ggml_backend/assets/game_medium.gguf
+    -o game_medium.gguf
 ```
 
 The script reads `model.pt` + `config.yaml` + `lang_map.json` from the given
@@ -90,14 +90,14 @@ directory and writes a single GGUF file containing all 671 tensors (FP32) and
 Inspect the result:
 
 ```bash
-./ggml_backend/build/bin/game_ggml_cli inspect ggml_backend/assets/game_medium.gguf
+./build/bin/game_ggml_cli inspect game_medium.gguf
 ```
 
 ## Run inference
 
 ```bash
-./ggml_backend/build/bin/game_ggml_cli extract input.wav \
-    -m ggml_backend/assets/game_medium.gguf \
+./build/bin/game_ggml_cli extract input.wav \
+    -m game_medium.gguf \
     --output-formats mid,txt,csv \
     --output-dir out/ \
     --tempo 120 \
@@ -228,6 +228,25 @@ configs produce identical note output):
   launches load precompiled PSOs instead of recompiling — no reliance on
   driver-level caches.
 
+## OpenUtau integration (.oudep)
+
+Packages for OpenUtau are distributed as `.oudep` archives (a zip of
+`game_ggml_cli` + `game_medium.gguf` + `config.json` + `oudep.yaml`) from the
+[GitHub Releases](https://github.com/KakaruHayate/game.cpp/releases).  Install
+the package for your platform; OpenUtau unpacks it itself.
+
+| OpenUtau build | Package to install |
+|---|---|
+| **Current** (new serve-API protocol) | `game_ggml-<platform>.oudep` or `-q8` — from the **latest** release (e.g. `v0.1.3`). This package speaks the current serve protocol (`src/cli/main.cpp`, `game_ggml_cli serve`). |
+| **Early** (old API spec) | `old_game_ggml-<platform>.oudep` — only shipped on the [`v0.1.0` release](https://github.com/KakaruHayate/game.cpp/releases/tag/v0.1.0). |
+
+> If your (older) OpenUtau build fails to talk to the engine, you are on the
+> old API spec — download the **`old_`-prefixed** `.oudep` from v0.1.0, not the
+> newest release.
+
+Platforms: `windows-x64-vulkan`, `linux-x64-vulkan`,
+`macos-arm64-metal`, `macos-x64-metal` (old-prefixed set).
+
 ## Reproducing the benchmark
 
 ```bash
@@ -238,17 +257,17 @@ y, _ = librosa.load('28.wav', sr=44100, mono=True)
 sf.write('/tmp/28_44100.wav', y, 44100, subtype='PCM_16')"
 
 # 2. Capture PyTorch's D3PM RNG stream (also produces a reference MIDI)
-python3 ggml_backend/scripts/align_demo.py /tmp/28_44100.wav \
+python3 scripts/align_demo.py /tmp/28_44100.wav \
     -m GAME-pt-1.0-medium/model.pt \
-    -g ggml_backend/assets/game_medium.gguf \
-    --cli ggml_backend/build/bin/game_ggml_cli \
+    -g game_medium.gguf \
+    --cli build/bin/game_ggml_cli \
     -l zh -o /tmp/align_out
 
 # 3. Run the 3-per-side subprocess-isolated benchmark
-python3 ggml_backend/scripts/benchmark_align.py /tmp/28_44100.wav \
+python3 scripts/benchmark_align.py /tmp/28_44100.wav \
     -m GAME-pt-1.0-medium/model.pt \
-    -g ggml_backend/assets/game_medium.gguf \
-    --cli ggml_backend/build/bin/game_ggml_cli \
+    -g game_medium.gguf \
+    --cli build/bin/game_ggml_cli \
     --rng /tmp/align_out/align_rng.bin \
     -l zh -o /tmp/bench_out --runs 3
 ```
@@ -256,7 +275,7 @@ python3 ggml_backend/scripts/benchmark_align.py /tmp/28_44100.wav \
 ## Using as a third-party library
 
 ```cmake
-add_subdirectory(path/to/GAME/ggml_backend)
+add_subdirectory(path/to/game.cpp)
 
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE game_ggml::game_ggml)
@@ -305,7 +324,7 @@ standalone CMake project that builds against the library.
 ## Tests
 
 ```bash
-ctest --test-dir ggml_backend/build --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
 
 The suite has 37 tests covering:

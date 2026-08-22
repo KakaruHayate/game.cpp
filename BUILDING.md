@@ -203,7 +203,15 @@ build/bin/game_ggml_cli extract input.wav \
 
 # Serve mode (for OpenUtau integration)
 build/bin/game_ggml_cli serve game_medium.gguf
-# Then write binary request frames to stdin (see src/cli/main.cpp for protocol)
+# Then write binary request frames to stdin (see src/cli/main.cpp for protocol).
+
+# API spec: the serve protocol (VRES request frames, notes-JSON responses)
+# lives in src/cli/main.cpp (`serve` command).  Packages in releases from
+# v0.1.1+ speak this current protocol.
+#
+# > Early OpenUtau builds use the OLD API spec: install the `old_`-prefixed
+# > .oudep from the v0.1.0 release (README → "OpenUtau integration"), not the
+# > latest package.  Do not remove the v0.1.0 old assets — old OpenUtau needs them.
 ```
 
 ## CUDA compatibility and CI scope
