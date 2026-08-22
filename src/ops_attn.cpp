@@ -139,7 +139,7 @@ ggml_tensor * pac(
 // EBF block
 // ---------------------------------------------------------------------------
 //
-// F-2: the branch residuals are  x + 0.5·lay_scale(branch).  Both factors are
+// The branch residuals are  x + 0.5·lay_scale(branch).  Both factors are
 // diagonal and are folded into the producing linear (ffn*.ln2 / merge_linear)
 // at load time (tensor_utils.cpp), so the graph no longer emits the lay_scale
 // mul and the 0.5 scale node per block.  w_lay_scale* are still bound (the

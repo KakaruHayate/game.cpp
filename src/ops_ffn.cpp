@@ -43,10 +43,10 @@ ggml_tensor * glu_ffn(ggml_context * ctx,
     return linear(ctx, y, w_ln2, b_ln2);
 }
 
-// F-1: split-halves variant — the ln1 weight/bias were split into two
-// contiguous [in, L] / [L] pieces at load time, so the two mul_mats output
-// contiguous [L, T, B] activations and the strided-view + 2x cont of the
-// monolithic path disappear.
+// Split-halves GLU: the ln1 weight/bias were split into two contiguous
+// [in, L] / [L] pieces at load time, so the two mul_mats output contiguous
+// [L, T, B] activations and the strided-view + 2x cont of the monolithic
+// path disappear.
 ggml_tensor * glu_ffn_split(ggml_context * ctx,
                             ggml_tensor * x,
                             ggml_tensor * w_ln1_a, ggml_tensor * b_ln1_a,
@@ -88,11 +88,7 @@ ggml_tensor * cgmlp(ggml_context * ctx,
                     int kernel_size,
                     bool use_dw_act,
                     float norm_eps) {
-    // ----- View 1x1 conv weights as 2D Linear weights -------------------------
-    // PyTorch Conv1d(D, 2L, kernel_size=1) weight has shape (2L, D, 1); stored
-    // row-major this is identical to a Linear weight of shape (2L, D).  In
-    // ggml terms, the original tensor has ne=(1, D, 2L) and we reshape-view to
-    // ne=(D, 2L).  Same trick for pw2: ne=(1, L, D) -> (L, D).
+    // 1x1 Conv1D weights are just Linear weights: reshape (1, in, out) -> (in, out).
     assert(w_pw1->ne[0] == 1);
     assert(w_pw2->ne[0] == 1);
     ggml_tensor * w_pw1_2d = ggml_reshape_2d(ctx, w_pw1, w_pw1->ne[1], w_pw1->ne[2]);

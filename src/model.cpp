@@ -410,16 +410,12 @@ void Model::Impl::run_segmenter_step(
     }
 
     // ---------- Stage B: tail blocks (all device-resident) ----------
-    // Small helper: build a persistent graph with a single cpy-to-persistent
-    // output, run it, and hand the graph handle back.
-    //  * add graph   (hit):  x_mid_dev = x_front + tail_delta
-    //  * mid graph   (miss): x_mid_dev = tail(middle)(x_front)
-    //  * update graph(miss): tail_delta_dev = x_mid - x_front;
-    //                        prev_front_dev = x_front
-    //  * back graph:         x_out_dev = tail(back)(x_mid_dev)
-    // All of these are built once per T and reference the device-resident
-    // x_front / db tensors as leaves, so no D×T host transfer happens on the
-    // cache path at all.
+    //  * add graph   (hit):   x_mid_dev = x_front + tail_delta
+    //  * mid graph   (miss):  x_mid_dev = tail(middle)(x_front)
+    //  * update graph(miss):  tail_delta_dev = x_mid - x_front; prev_front_dev = x_front
+    //  * back graph:          x_out_dev = tail(back)(x_mid_dev)
+    // All reference device-resident tensors as leaves — no D×T host transfer
+    // on the cache path.
 
     if (!seg_add_stage.matches(T, nb ? 1 : 0)) {
         seg_add_stage.reset();

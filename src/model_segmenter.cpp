@@ -29,7 +29,7 @@ static ops::EBFBlockWeights bind_seg_layer(
         B.w_norm1    = W.get(p + "norm1.weight");
         B.w_ffn1_ln1 = W.get(p + "ffn1.ln1.weight");
         B.b_ffn1_ln1 = W.get(p + "ffn1.ln1.bias");
-        B.w_ffn1_ln1_a = W.try_get(p + "ffn1.ln1.weight.a");   // F-1 split halves
+        B.w_ffn1_ln1_a = W.try_get(p + "ffn1.ln1.weight.a");   // .a/.b split halves
         B.b_ffn1_ln1_a = W.try_get(p + "ffn1.ln1.bias.a");
         B.w_ffn1_ln1_b = W.try_get(p + "ffn1.ln1.weight.b");
         B.b_ffn1_ln1_b = W.try_get(p + "ffn1.ln1.bias.b");
@@ -41,7 +41,7 @@ static ops::EBFBlockWeights bind_seg_layer(
         B.w_norm2    = W.get(p + "norm2.weight");
         B.w_ffn2_ln1 = W.get(p + "ffn2.ln1.weight");
         B.b_ffn2_ln1 = W.get(p + "ffn2.ln1.bias");
-        B.w_ffn2_ln1_a = W.try_get(p + "ffn2.ln1.weight.a");   // F-1 split halves
+        B.w_ffn2_ln1_a = W.try_get(p + "ffn2.ln1.weight.a");   // .a/.b split halves
         B.b_ffn2_ln1_a = W.try_get(p + "ffn2.ln1.bias.a");
         B.w_ffn2_ln1_b = W.try_get(p + "ffn2.ln1.weight.b");
         B.b_ffn2_ln1_b = W.try_get(p + "ffn2.ln1.bias.b");
@@ -164,7 +164,10 @@ SegmenterTailOutputs build_segmenter_tail_graph(
     int fn_blocks,
     int end_blocks)
 {
-    if (end_blocks <= 0 || end_blocks > cfg.segmenter.num_layers) {
+    // Only coerce invalid bounds (negative / past the end); end_blocks == 0
+    // is a valid *empty* slice (DBCache middle range when nb covers the tail),
+    // which would otherwise coerce to num_layers and run the tail twice.
+    if (end_blocks < 0 || end_blocks > cfg.segmenter.num_layers) {
         end_blocks = cfg.segmenter.num_layers;
     }
     ggml_tensor * x = x_front;

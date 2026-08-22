@@ -98,7 +98,7 @@ struct JEBFBlockWeights {
     ggml_tensor * w_norm_ffn1_x    = nullptr;
     ggml_tensor * w_norm_ffn1_pool = nullptr;
     ggml_tensor * w_ffn1_x_ln1     = nullptr;
-    ggml_tensor * w_ffn1_x_ln1_a  = nullptr;    // F-1 split halves (.a/.b)
+    ggml_tensor * w_ffn1_x_ln1_a  = nullptr;    // .a/.b split halves
     ggml_tensor * b_ffn1_x_ln1_a  = nullptr;
     ggml_tensor * w_ffn1_x_ln1_b  = nullptr;
     ggml_tensor * b_ffn1_x_ln1_b  = nullptr;
@@ -106,7 +106,7 @@ struct JEBFBlockWeights {
     ggml_tensor * w_ffn1_x_ln2     = nullptr;
     ggml_tensor * b_ffn1_x_ln2     = nullptr;
     ggml_tensor * w_ffn1_pool_ln1  = nullptr;
-    ggml_tensor * w_ffn1_pool_ln1_a = nullptr;    // F-1 split halves
+    ggml_tensor * w_ffn1_pool_ln1_a = nullptr;    // .a/.b split halves
     ggml_tensor * b_ffn1_pool_ln1_a = nullptr;
     ggml_tensor * w_ffn1_pool_ln1_b = nullptr;
     ggml_tensor * b_ffn1_pool_ln1_b = nullptr;
@@ -125,7 +125,7 @@ struct JEBFBlockWeights {
     ggml_tensor * w_norm_ffn2_x    = nullptr;
     ggml_tensor * w_norm_ffn2_pool = nullptr;
     ggml_tensor * w_ffn2_x_ln1     = nullptr;
-    ggml_tensor * w_ffn2_x_ln1_a  = nullptr;    // F-1 split halves
+    ggml_tensor * w_ffn2_x_ln1_a  = nullptr;    // .a/.b split halves
     ggml_tensor * b_ffn2_x_ln1_a  = nullptr;
     ggml_tensor * w_ffn2_x_ln1_b  = nullptr;
     ggml_tensor * b_ffn2_x_ln1_b  = nullptr;
@@ -133,7 +133,7 @@ struct JEBFBlockWeights {
     ggml_tensor * w_ffn2_x_ln2     = nullptr;
     ggml_tensor * b_ffn2_x_ln2     = nullptr;
     ggml_tensor * w_ffn2_pool_ln1  = nullptr;
-    ggml_tensor * w_ffn2_pool_ln1_a = nullptr;    // F-1 split halves
+    ggml_tensor * w_ffn2_pool_ln1_a = nullptr;    // .a/.b split halves
     ggml_tensor * b_ffn2_pool_ln1_a = nullptr;
     ggml_tensor * w_ffn2_pool_ln1_b = nullptr;
     ggml_tensor * b_ffn2_pool_ln1_b = nullptr;
@@ -164,7 +164,7 @@ JoinResult joint_attention(
     int num_heads,
     int head_dim,
     float theta = 10000.0f,
-    bool pool_only = false);               // F-6: only the N pool query rows
+    bool pool_only = false);               // only the N pool query rows
 
 // PJAC: parallel joint-attn + CgMLP, per-stream merges.
 JoinResult pjac(
@@ -178,10 +178,10 @@ JoinResult pjac(
     int num_heads,
     int head_dim,
     float theta = 10000.0f,
-    bool pool_only = false);               // F-6: skip the x stream entirely
+    bool pool_only = false);               // skip the x stream entirely
 
 // Full JEBF block (FFN1 + PJAC + FFN2 with residual + LayerScale on each).
-// pool_only (F-6): used for the estimator's last layer, where the x stream
+// pool_only: used for the estimator's last layer, where the x stream
 // has no consumer — only the pool stream is computed (no x FFN / no x-side
 // CgMLP / attention restricted to the N pool query rows).
 JoinResult jebf_block(

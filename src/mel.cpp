@@ -139,17 +139,9 @@ std::vector<float> MelExtractor::forward(const float * wav, std::size_t n) const
 
     std::vector<float> out(static_cast<std::size_t>(T) * n_mels);
 
-    // Frames are independent — split the range into contiguous stripes and
-    // process them on a small worker pool.  At ~1000+ frames per 10 s clip
-    // this is several ms of single-threaded work that parallelizes cleanly.
-    // Guard the pool size by frame count so short clips never pay for
-    // threads they don't use.
-    //
-    // Each worker runs its stripe as ONE batched pocketfft r2c (2-D shape
-    // {n_fft, block}, FFT along axis 0) instead of one r2c call per frame —
-    // pocketfft builds its twiddle table per call, so this amortises that
-    // cost over the whole stripe (E: batched FFT).  Per-frame results are
-    // identical: the extra dimension is only iterated.
+    // Frames are independent: split into stripes on a small worker pool
+    // (≤ 8, guarded by frame count).  Each worker runs one batched pocketfft
+    // r2c over its stripe to amortize twiddle-table setup across frames.
     unsigned hw = std::thread::hardware_concurrency();
     if (hw == 0) hw = 1;
     const int want  = static_cast<int>(std::min<unsigned>(hw, 8u));

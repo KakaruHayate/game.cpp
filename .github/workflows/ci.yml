@@ -121,21 +121,13 @@ jobs:
           - os: ubuntu-latest
             name: linux-x64-cpu
             backend: cpu
-            # v0.20.2 constraint: GGML_CPU_ALL_VARIANTS requires
-            # GGML_BACKEND_DL (ISA variants became dlopen MODULE plugins),
-            # but DL mode does NOT link the CPU backend into the ggml
-            # umbrella target, so game.cpp's direct references
-            # (ggml_backend_cpu_init, ggml_threadpool_new, ...) fail to
-            # link.  Non-DL + GGML_NATIVE=OFF builds a portable baseline
-            # x86-64 CPU backend (no -march=native capture of the runner).
-            # SIMD dispatch for the CPU package needs a dlopen-path refactor
-            # of backend.cpp and is tracked separately.
-            # This job also exercises GGML_LLAMAFILE=ON (project default).
-            # ⚠ Keep GGML_NATIVE=OFF until the dlopen refactor: on v0.20.x
-            # NATIVE is exclusive with GGML_BACKEND_DL, and flipping to
-            # NATIVE=ON + variants would unlink the CPU backend and break
-            # our direct symbols (see AGENT.md "ggml version gate").
-            cmake_extra: "-DGGML_NATIVE=OFF -DGAME_GGML_LLAMAFILE=ON"
+            # TEMPORARY ANCHOR — ggml v0.19.0 (see AGENT.md "ggml version
+            # gate").  GGML_NATIVE=ON captures the runner CPU; do NOT restore
+            # the v0.20.2-era NONDL portable baseline or bump the tag until
+            # backend.cpp's direct CPU symbols move behind GGML_BACKEND_DL
+            # (v0.20.x variants require DL, which unlinks the CPU backend).
+            # Also exercises GGML_LLAMAFILE=ON (project default).
+            cmake_extra: "-DGGML_NATIVE=ON -DGAME_GGML_LLAMAFILE=ON"
             build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.so*"
@@ -246,9 +238,15 @@ jobs:
           # v2: this repo was renamed (game_ggml_cli -> game.cpp), changing the
           # runner workspace path; old cache entries embed the pre-rename
           # absolute path and must not be restored.
-          key: ${{ matrix.name }}-deps-v2-${{ hashFiles('cmake/Dependencies.cmake') }}
+          # deps-v3: cache-key bump after the ggml v0.20.2 -> v0.19.0 anchor.
+          # GPU jobs restore `_deps` via restore-keys; the old deps-v2 caches
+          # hold v0.20.2-built ggml artifacts and mixing them with the v0.19.0
+          # source breaks the Vulkan build (undefined tq2_0 kernel refs on
+          # Linux, shader custom-build errors on Windows).  v3 prevents those
+          # stale restores while keeping everything else green.
+          key: ${{ matrix.name }}-deps-v3-${{ hashFiles('cmake/Dependencies.cmake') }}
           restore-keys: |
-            ${{ matrix.name }}-deps-v2-
+            ${{ matrix.name }}-deps-v3-
 
       - name: Configure
         run: |

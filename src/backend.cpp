@@ -50,10 +50,9 @@ const char * version_string() noexcept {
 }
 
 const char * ggml_version_string() noexcept {
-    // ggml does not export a runtime-queryable version.  Report the tag we
-    // pin in cmake/Dependencies.cmake (FetchContent GIT_TAG) so --version
-    // cannot silently drift from the actual dependency.
-    return "v0.20.2";
+    // Report the tag pinned in cmake/Dependencies.cmake (URL + URL_HASH) so
+    // --version cannot silently drift.  TEMPORARY ANCHOR: v0.19.0.
+    return "v0.19.0";
 }
 
 // -----------------------------------------------------------------------------

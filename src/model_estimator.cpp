@@ -25,7 +25,7 @@ static ops::JEBFBlockWeights bind_jebf_layer(
         B.w_norm_ffn1_pool = W.get(p + "norm_ffn1_pool.weight");
         B.w_ffn1_x_ln1 = W.get(p + "ffn1_x.ln1.weight");
         B.b_ffn1_x_ln1 = W.get(p + "ffn1_x.ln1.bias");
-        B.w_ffn1_x_ln1_a = W.try_get(p + "ffn1_x.ln1.weight.a");   // F-1 split halves
+        B.w_ffn1_x_ln1_a = W.try_get(p + "ffn1_x.ln1.weight.a");   // .a/.b split halves
         B.b_ffn1_x_ln1_a = W.try_get(p + "ffn1_x.ln1.bias.a");
         B.w_ffn1_x_ln1_b = W.try_get(p + "ffn1_x.ln1.weight.b");
         B.b_ffn1_x_ln1_b = W.try_get(p + "ffn1_x.ln1.bias.b");
@@ -33,7 +33,7 @@ static ops::JEBFBlockWeights bind_jebf_layer(
         B.b_ffn1_x_ln2 = W.get(p + "ffn1_x.ln2.bias");
         B.w_ffn1_pool_ln1 = W.get(p + "ffn1_pool.ln1.weight");
         B.b_ffn1_pool_ln1 = W.get(p + "ffn1_pool.ln1.bias");
-        B.w_ffn1_pool_ln1_a = W.try_get(p + "ffn1_pool.ln1.weight.a");   // F-1 split halves
+        B.w_ffn1_pool_ln1_a = W.try_get(p + "ffn1_pool.ln1.weight.a");   // .a/.b split halves
         B.b_ffn1_pool_ln1_a = W.try_get(p + "ffn1_pool.ln1.bias.a");
         B.w_ffn1_pool_ln1_b = W.try_get(p + "ffn1_pool.ln1.weight.b");
         B.b_ffn1_pool_ln1_b = W.try_get(p + "ffn1_pool.ln1.bias.b");
@@ -49,7 +49,7 @@ static ops::JEBFBlockWeights bind_jebf_layer(
         B.w_norm_ffn2_pool = W.get(p + "norm_ffn2_pool.weight");
         B.w_ffn2_x_ln1 = W.get(p + "ffn2_x.ln1.weight");
         B.b_ffn2_x_ln1 = W.get(p + "ffn2_x.ln1.bias");
-        B.w_ffn2_x_ln1_a = W.try_get(p + "ffn2_x.ln1.weight.a");   // F-1 split halves
+        B.w_ffn2_x_ln1_a = W.try_get(p + "ffn2_x.ln1.weight.a");   // .a/.b split halves
         B.b_ffn2_x_ln1_a = W.try_get(p + "ffn2_x.ln1.bias.a");
         B.w_ffn2_x_ln1_b = W.try_get(p + "ffn2_x.ln1.weight.b");
         B.b_ffn2_x_ln1_b = W.try_get(p + "ffn2_x.ln1.bias.b");
@@ -57,7 +57,7 @@ static ops::JEBFBlockWeights bind_jebf_layer(
         B.b_ffn2_x_ln2 = W.get(p + "ffn2_x.ln2.bias");
         B.w_ffn2_pool_ln1 = W.get(p + "ffn2_pool.ln1.weight");
         B.b_ffn2_pool_ln1 = W.get(p + "ffn2_pool.ln1.bias");
-        B.w_ffn2_pool_ln1_a = W.try_get(p + "ffn2_pool.ln1.weight.a");   // F-1 split halves
+        B.w_ffn2_pool_ln1_a = W.try_get(p + "ffn2_pool.ln1.weight.a");   // .a/.b split halves
         B.b_ffn2_pool_ln1_a = W.try_get(p + "ffn2_pool.ln1.bias.a");
         B.w_ffn2_pool_ln1_b = W.try_get(p + "ffn2_pool.ln1.weight.b");
         B.b_ffn2_pool_ln1_b = W.try_get(p + "ffn2_pool.ln1.bias.b");
@@ -201,9 +201,9 @@ EstimatorOutputs build_estimator_graph(
     ggml_tensor * pool = ggml_repeat(ctx, pool_template, pool_shape_ref);
 
     // Run JEBF layers.  The last layer's x stream has no consumer (only
-    // pool_logits is read), so run it pool-only (F-6): attention restricted
-    // to the N pool query rows and no x-side FFN/CgMLP — numerically
-    // identical, since the x rows were discarded anyway.
+    // pool_logits is read), so run it pool-only: attention restricted to the
+    // N pool query rows and no x-side FFN/CgMLP — numerically identical,
+    // since the x rows were discarded anyway.
     for (int i = 0; i < cfg.estimator.num_layers; ++i) {
         const bool pool_only = (i == cfg.estimator.num_layers - 1);
         auto out = ops::jebf_block(ctx, pool, x, W.layers[i],

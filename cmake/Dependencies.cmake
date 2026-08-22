@@ -88,30 +88,25 @@ endif()
 # ggml (MIT) — tensor engine.  Fetched + Metal binary-archive patch applied
 # on Apple for fast cold start.
 #
-# > CPU version/config gate — see AGENT.md "ggml version gate".  ggml pinned
-# > at v0.20.2; the CI CPU package is non-DL + GGML_NATIVE=OFF (portable
-# > baseline).  Do NOT flip the CPU job to GGML_NATIVE / GGML_CPU_ALL_VARIANTS
-# > and do NOT downgrade the tag until backend.cpp's direct references
+# > TEMPORARY ANCHOR — ggml v0.19.0 (see AGENT.md "ggml version gate").  Do
+# > NOT bump to v0.20.x until backend.cpp's direct references
 # > (ggml_backend_cpu_init, ggml_threadpool_new, ggml_backend_cpu_set_threadpool)
-# > are moved behind a GGML_BACKEND_DL dlopen load: on v0.20.x variants
-# > require DL, DL unlinks the CPU backend from the umbrella target, and
-# > NATIVE + DL are mutually exclusive upstream.  NATIVE only matters after
-# > GGML_AVX512* options are enabled; it does not flip ggml's SIMD kernels.
+# > are moved behind a GGML_BACKEND_DL dlopen load: on v0.20.x CPU variants
+# > require GGML_BACKEND_DL, DL unlinks the CPU backend from the umbrella
+# > target (link errors), and NATIVE + DL are mutually exclusive upstream.
+# > The CI linux-x64-cpu job is GGML_NATIVE=ON because of this anchor.
 # ---------------------------------------------------------------------------
+# URL archive (not GIT): with FETCHCONTENT_UPDATES_DISCONNECTED=ON the
+# populate gitupdate step must resolve the pinned ref locally, and a fresh
+# shallow clone cannot — a tag a few commits behind main is not on it, so
+# populate aborts with "ref not present locally".  GPU CI jobs also restore
+# a stale _deps cache whose ggml-populate dir has no .git (URL download),
+# and a GIT pin fails there with "not a git repository: '.git'"; URL keeps
+# those cached builds working.  Patches still apply via `git apply` --check.
 FetchContent_Declare(
     ggml
-    # URL archive instead of git: with FETCHCONTENT_UPDATES_DISCONNECTED=ON
-    # the populate gitupdate step must resolve the pinned ref locally, and a
-    # fresh clone cannot — a shallow clone only carries the default-branch
-    # HEAD, and the v0.20.2 tag/commit is not on it — so populate aborts with
-    # "requested git ref ... not present locally".  A URL archive has no git
-    # ref semantics: populate is a plain download+extract (network needed on
-    # first populate / cache miss; the CI _deps cache then makes later runs
-    # offline).  Patches are still applied with `git apply`, which needs no
-    # .git directory.  (No DOWNLOAD_EXTRACT_TIMESTAMP: requires CMake 3.24+,
-    # project minimum is 3.18.)
-    URL      https://github.com/ggerganov/ggml/archive/refs/tags/v0.20.2.tar.gz
-    URL_HASH SHA256=55dfd1ea4e6b6b3e25d9411f9525eb4df1c796c03a244e2321388b30f189cd3d
+    URL      https://github.com/ggerganov/ggml/archive/refs/tags/v0.19.0.tar.gz
+    URL_HASH SHA256=cfb6512adda2853e6500a7c5b23f326987cb4c723e9f8f93c6c5a7e7e4861648
 )
 
 FetchContent_GetProperties(ggml)

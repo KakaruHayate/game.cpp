@@ -29,10 +29,10 @@ bool is_dwconv_weight(const char * name) {
            std::strstr(name, ".weight") != nullptr;
 }
 
-// F-1: GLU FFN first linear ("ln1").  The [in, 2L] weight and [2L] bias are
-// split at load time into two [in, L] / [L] halves so the graph can run two
-// mul_mats that produce contiguous outputs, eliminating the two cont copies
-// per GLU FFN (see glu_ffn_split in ops_ffn.cpp).
+// GLU FFN first linear ("ln1"): the [in, 2L] weight and [2L] bias are split
+// at load time into two [in, L] / [L] halves so the graph runs two mul_mats
+// that produce contiguous outputs, eliminating the two cont copies per GLU
+// FFN (see glu_ffn_split in ops_ffn.cpp).
 bool is_glu_ln1_weight(const char * name) {
     return std::strstr(name, ".ln1.weight") != nullptr && !is_dwconv_weight(name);
 }
@@ -41,38 +41,24 @@ bool is_glu_ln1_bias(const char * name) {
 }
 
 // ---------------------------------------------------------------------------
-// F-2: EBF layer-scale folding (load-time, schema-preserving).
+// EBF layer-scale folding (load-time, schema-preserving).
 //
-// The EBF residual is  x + 0.5 * lay_scale(branch)  where lay_scale is a
-// per-channel multiply.  Since 0.5 and lay_scale are both diagonal, they can
-// be folded into the *producing* linear of the branch at load time:
+// The EBF residual is  x + m·lay_scale(branch)  where m = 0.5 for the
+// single-stream EBF (encoder/segmenter) and m = 1.0 for the joint EBF
+// (estimator), and lay_scale is a per-channel multiply.  Both are diagonal,
+// so they fold into the branch's *producing* linear at load time:
 //
-//     out' = 0.5 * s ⊙ (W·h + b)  ==  (0.5·s·W)·h + (0.5·s⊙b)
+//     out' = m·s ⊙ (W·h + b)  ==  (m·s·W)·h + (m·s⊙b)
 //
-// so the graph no longer emits a lay_scale mul + a 0.5 scale node per EBF
-// block (two elementwise kernels per FFN, one per PAC branch).  The GGUF
-// keeps its lay_scale tensors (bind code still finds them) — they are simply
-// no longer referenced by the graph.  This is idempotent: the file is never
-// modified, every load folds the same way.
+// This removes a lay_scale mul + scale node per EBF block from the graph and
+// never modifies the GGUF (idempotent, every load folds the same way).  The
+// fold is lossless for Q8_0 (only per-block d scalars change) and exact for
+// F32/F16 up to float rounding — the graph arithmetic order changes, so
+// outputs match the unfolded graph to ~1e-7, not bit-exactly.
 //
-// The fold is lossless for Q8_0 (only the per-block d scalars change) and
-// exact for F32/F16 up to float rounding; the graph arithmetic order changes
-// (scale applied before the matmul instead of after), so outputs are
-// expected to match the unfolded graph to ~1e-7, not bit-exactly.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// F-2: layer-scale folding (load-time, schema-preserving) — covers both the
-// single-stream EBF blocks (encoder/segmenter) and the joint EBF (estimator):
-//
-//   * single-stream EBF residual  x + 0.5·lay_scale(branch)     → mult 0.5
-//   * joint EBF residual          x + lay_scale(branch)         → mult 1.0
-//
-// lay_scale is a per-channel multiply, so it folds into the branch's
-// producing linear at load time (see F-2 note above).  `parse_lay_scale_name`
-// maps a GGUF lay_scale tensor name to its producing linear's weight/bias
-// tensor names (relative to the block base, with leading '.') and the
-// extra multiplier.  Returns false for non-lay_scale names.
+// `parse_lay_scale_name` maps a GGUF lay_scale tensor name to its producing
+// linear's weight/bias tensor names (relative to the block base, with leading
+// '.') and the extra multiplier; returns false for non-lay_scale names.
 // ---------------------------------------------------------------------------
 struct FoldTarget {
     std::string w_suffix;   // e.g. ".ffn1.ln2.weight" (base + suffix = full name)
@@ -231,7 +217,7 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
     }
 
     // --- 1b. Create persistent F32 copies of F16 depthwise-conv weights
-    //          (see is_dwconv_weight above), plus F-1 GLU ln1 split halves
+    //          (see is_dwconv_weight above), plus GLU ln1 split halves
     //          (a/b).  The gguf-init context is sized exactly for its tensor
     //          table, so these copies get their own context + backend buffer.
     std::map<std::string, ggml_tensor *> dw_f32;   // original name -> F32 copy
@@ -317,7 +303,7 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
     const size_t data_offset = gguf_get_data_offset(gctx);
     std::vector<std::uint8_t> scratch;
 
-    // --- 3a. F-2: EBF layer-scale fold plan.  Scan the GGUF tensor table
+    // --- 3a. EBF layer-scale fold plan.  Scan the GGUF tensor table
     //           for encoder/segmenter EBF lay_scale tensors, read their
     //           payloads once, and record which producing linear weights and
     //           biases to fold.  The upload loop below applies the fold and
@@ -431,7 +417,7 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
             throw GgufError(std::string("short read for tensor '") + name + "'");
         }
 
-        // F-2: fold EBF layer-scale into producing linear weights/biases.
+        // fold EBF layer-scale into producing linear weights/biases.
         {
             const auto fw = fold_weights.find(name);
             if (fw != fold_weights.end()) fold_linear_weight(t, scratch, fw->second);
@@ -441,9 +427,9 @@ LoadedWeights LoadedWeights::load_all(const GgufFile & gguf, ggml_backend_t back
             if (lsc != ls_cache.end()) scratch = lsc->second;  // reuse cached payload
         }
 
-        // F-1: split GLU ln1 weights/biases into a/b F32 halves.  The
-        // original tensor is still uploaded (bind code references it), but
-        // the graph uses the contiguous .a/.b halves (two mul_mats, no cont).
+        // Split GLU ln1 weights/biases into a/b F32 halves.  The original
+        // tensor is still uploaded (bind code references it), but the graph
+        // uses the contiguous .a/.b halves (two mul_mats, no cont).
         {
             const auto gw = glu_ab.find(name);
             if (gw != glu_ab.end()) {
