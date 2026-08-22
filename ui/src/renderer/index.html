@@ -7,58 +7,95 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>GAME MIDI Studio</h1>
-    <span class="sub">singing-voice → MIDI · on ggml</span>
-  </header>
 
-  <main>
-    <!-- Left: models + input -->
-    <section class="col">
-      <div class="card">
-        <h2>模型 / 引擎 (oudep)</h2>
-        <p class="hint">导入 game.cpp 产出的 <code>.oudep</code> 包（内含 game_ggml_cli 与 GGUF 模型）。</p>
-        <button id="btn-import">导入 .oudep…</button>
-        <p id="pkg-status" class="hint dim"></p>
-        <label>模型 <select id="sel-model"></select></label>
-        <label>语言 <select id="sel-lang"></select></label>
-        <button id="btn-remove-pkg" class="linklike">移除当前包</button>
-      </div>
+  <h1>GAME MIDI Studio</h1>
+  <p class="subtitle">Generative Adaptive MIDI Extractor · on ggml</p>
+  <p class="subtitle">
+    Singing-voice → MIDI. Import an <code>.oudep</code> engine package, decode/resample
+    a vocal track to 44.1&nbsp;kHz mono, render, visualize &amp; export <code>.mid</code>.
+  </p>
 
-      <div class="card">
-        <h2>人声输入</h2>
-        <input type="file" id="file-audio" accept="audio/*,video/*,.wav,.mp3,.flac,.m4a,.aac,.ogg,.opus,.mp4,.mov,.webm">
-        <p id="audio-info" class="dim">未选择音频</p>
-        <canvas id="waveform" width="480" height="90"></canvas>
-        <p class="hint">自动解码任意常见格式并重采样至 44.1 kHz 单声道（引擎输入要求）。</p>
+  <section class="card">
+    <h2>Model / Engine</h2>
+    <div class="grid">
+      <div class="field">
+        <label>package</label>
+        <button id="btn-import">Import .oudep…</button>
       </div>
-    </section>
+      <div class="field">
+        <label>model</label>
+        <select id="sel-model"><option>— 未导入 —</option></select>
+      </div>
+      <div class="field">
+        <label>language</label>
+        <select id="sel-lang"><option>—</option></select>
+      </div>
+      <div class="field" style="flex:2">
+        <label>status</label>
+        <div class="status-row"><span id="modelDot" class="dot"></span><span id="pkg-status">未导入引擎包</span></div>
+      </div>
+    </div>
+  </section>
 
-    <!-- Right: render + visualization -->
-    <section class="col col-wide">
-      <div class="card">
-        <h2>渲染 MIDI</h2>
-        <div class="row">
-          <label>Tempo <input type="number" id="in-tempo" value="120" min="20" max="400"></label>
-          <label>nsteps <select id="in-nsteps"><option value="1">1（快速）</option><option value="8" selected>8（高质量）</option></select></label>
-          <label>Seed <input type="number" id="in-seed" value="42"></label>
-        </div>
-        <button id="btn-render" disabled>渲染 → MIDI</button>
-        <p id="render-status" class="hint dim"></p>
+  <section class="card">
+    <h2>Inference settings</h2>
+    <div class="grid">
+      <div class="field">
+        <label>tempo</label>
+        <input id="in-tempo" type="number" min="20" max="400" value="120">
       </div>
+      <div class="field">
+        <label>nsteps</label>
+        <select id="in-nsteps">
+          <option value="1">1 · fast</option>
+          <option value="8" selected>8 · quality</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>seed</label>
+        <input id="in-seed" type="number" min="0" max="4294967295" value="42">
+      </div>
+      <div class="field" style="flex:2">
+        <label>engine</label>
+        <div class="status-row"><span id="engineDot" class="dot"></span><span id="engine-status" class="status-text">——</span></div>
+      </div>
+    </div>
+  </section>
 
-      <div class="card grow">
-        <h2>可视化 <span id="viz-title" class="dim"></span></h2>
-        <canvas id="piano" width="900" height="260"></canvas>
-        <p class="hint dim" id="viz-empty">渲染后在此显示音符 / Pitch 曲线。</p>
-      </div>
+  <section class="card">
+    <h2>Audio</h2>
+    <div id="dropZone" class="zone">
+      <div class="big">拖入或点击选择纯人声音频</div>
+      <div class="muted">wav / mp3 / flac / m4a / aac / ogg / opus …（自动转 44.1 kHz 单声道）</div>
+    </div>
+    <input id="file-audio" type="file" accept="audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg,.opus" style="display:none">
+    <div class="status-row">
+      <span id="audioDot" class="dot"></span>
+      <span id="audio-info">no audio loaded</span>
+    </div>
+    <canvas id="waveform" width="800" height="72"></canvas>
+  </section>
 
-      <div class="row">
-        <button id="btn-export" disabled>导出 .mid</button>
-        <button id="btn-open-folder" disabled>打开输出目录</button>
-      </div>
-    </section>
-  </main>
+  <section class="card">
+    <h2>Transcribe</h2>
+    <div class="buttons">
+      <button id="btn-render" disabled>Transcribe</button>
+      <button id="btn-export" class="ghost" disabled>Download .mid</button>
+      <button id="btn-open-folder" class="ghost" disabled>Output dir</button>
+    </div>
+    <div class="status-row">
+      <span id="runDot" class="dot"></span>
+      <span id="render-status">idle</span>
+    </div>
+    <canvas id="roll" width="800" height="200"></canvas>
+    <pre id="log">[ready]</pre>
+  </section>
+
+  <footer>
+    <a href="https://github.com/openvpi/GAME" target="_blank" rel="noopener">openvpi/GAME</a>
+    <span class="sep">·</span>
+    <span class="muted">MIT · on ggml</span>
+  </footer>
 
   <script src="app.js"></script>
 </body>

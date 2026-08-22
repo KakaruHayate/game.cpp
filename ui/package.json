@@ -1,6 +1,6 @@
 {
   "name": "game-midi-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "GAME (singing-voice-to-MIDI) desktop UI on ggml — import oudep package, input vocals, render & export MIDI",
   "main": "src/main.js",
   "scripts": {
@@ -10,7 +10,10 @@
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux"
   },
-  "author": {"name": "KakaruHayate", "email": "kakaru@game-midi-studio.invalid"},
+  "author": {
+    "name": "KakaruHayate",
+    "email": "kakaru@game-midi-studio.invalid"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -43,8 +46,12 @@
       "target": "dmg",
       "category": "public.app-category.music"
     },
-    "linux": {"maintainer": "KakaruHayate <kakaru@game-midi-studio.invalid>",
-      "target": ["AppImage", "deb"],
+    "linux": {
+      "maintainer": "KakaruHayate <kakaru@game-midi-studio.invalid>",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "AudioVideo"
     }
   }
