@@ -7,12 +7,14 @@ include(FetchContent)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "" FORCE)
 
 # Propagate backend toggles as ggml's own option names *before* add_subdirectory.
+# Note: GGML_LLAMAFILE deliberately does NOT use FORCE so an explicit
+# -DGGML_LLAMAFILE=OFF survives; GAME_GGML_LLAMAFILE is the public switch.
 set(GGML_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
 set(GGML_METAL           ${GAME_GGML_METAL}  CACHE BOOL "ggml: enable Metal"  FORCE)
 set(GGML_CUDA            ${GAME_GGML_CUDA}   CACHE BOOL "ggml: enable CUDA"   FORCE)
 set(GGML_VULKAN          ${GAME_GGML_VULKAN} CACHE BOOL "ggml: enable Vulkan" FORCE)
-set(GGML_LLAMAFILE       ${GAME_GGML_LLAMAFILE} CACHE BOOL "ggml: llamafile sgemm kernels (CPU)" FORCE)
+set(GGML_LLAMAFILE       ${GAME_GGML_LLAMAFILE} CACHE BOOL "ggml: llamafile sgemm kernels (CPU)")
 
 # Apple cold-start optimisation: pre-compile a default.metallib instead of
 # embedding source; paired with the binary-archive patch below this cuts ~7 s

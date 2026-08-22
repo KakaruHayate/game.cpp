@@ -128,12 +128,14 @@ clips shouldn't spawn threads).
 
 ## 10. Don't fight the sandbox for writes outside the repo
 
-The git metadata of this checkout lives at `C:\Users\kakar\game_cpp_git`
-(the J: drive path is the worktree).  Git index writes (branch/stash/commit)
-need to write there.  If a git write fails with "Permission denied" on
-`index.lock`, it's the harness sandbox — **escalate once** with
+The git metadata of a checkout may live in a **different directory than the
+worktree** (linked worktree; `git rev-parse --git-dir` finds it).  Git index
+writes (branch/stash/commit) write to that directory, not the worktree.  If a
+git write fails with "Permission denied" on `index.lock`, resolve the actual
+git dir with `git rev-parse --git-dir` (`--absolute-git-dir` for a full path),
+and it's almost always the harness sandbox — **escalate once** with
 `sandbox_permissions: danger-full-access` + justification; do not retry in a
-loop.
+loop.  Never hard-code a local absolute path in committed docs.
 
 ---
 

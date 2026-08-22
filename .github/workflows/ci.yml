@@ -316,6 +316,71 @@ jobs:
           name: game-ggml-medium-model
           path: model
 
+      - name: CPU inference smoke test (llamafile sgemm path)
+        if: matrix.backend == 'cpu' && runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          # Short 2 s 220 Hz sine, 44.1 kHz mono, PCM16 (stdlib only).
+          python3 - <<'PY'
+          import math, struct, wave
+          sr, dur = 44100, 2.0
+          n = int(sr * dur)
+          with wave.open("smoke.wav", "wb") as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+              frames = bytearray()
+              for i in range(n):
+                  frames += struct.pack("<h", int(0.3 * 32767 * math.sin(2 * math.pi * 220 * i / sr)))
+              w.writeframes(bytes(frames))
+          PY
+
+          # Run F32 and Q8_0 models on the same wave.  This exercises the
+          # default GGML_LLAMAFILE=ON mul_mat path (sgemm) with real model
+          # data, which --version never touches.
+          for m in model/game_medium.gguf model/game_medium_q8.gguf; do
+            tag=$(basename "$m" .gguf)
+            echo "== extract: $m (llamafile path) =="
+            build/bin/game_ggml_cli extract smoke.wav -m "$m" \
+              --output-formats mid,csv,txt --output-dir "out-$tag" \
+              --nsteps 8 --cache-threshold 0 --seed 42
+            test -s "out-$tag/smoke.mid"
+            test -s "out-$tag/smoke.csv"
+          done
+
+          # Cross-check F32 vs Q8_0 with the repo's own tolerances
+          # (PITCH_EPS=5 cents, TIME_EPS=0.05 s — same as verify_backends.py).
+          # Note-count drift of a couple notes is expected between F32 and
+          # Q8 (see docs/benchmark-7channel.md: CPU F32 143 vs Q8 145), so
+          # we require it be small (<5%) and compare pitch within 5 cents on
+          # the shared prefix using a midi-cents parse.
+          python3 - <<'PY'
+          import csv, re, sys
+          LETTER = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+          def cents(p):
+              if p == "rest":
+                  return None
+              m = re.fullmatch(r"([A-G])(#?)(\d+)([+-]\d+)?", p.strip())
+              if not m:
+                  raise ValueError(f"unparsable pitch {p!r}")
+              letter, sharp, octave, off = m.groups()
+              return (LETTER[letter] + (1 if sharp else 0) + (int(octave) + 1) * 12) * 100 + int(off or 0)
+          def notes(path):
+              with open(path, newline="") as f:
+                  return [(cents(r["pitch"]), float(r["offset"]), float(r["duration"])) for r in csv.DictReader(f)]
+          a, b = notes("out-game_medium/smoke.csv"), notes("out-game_medium_q8/smoke.csv")
+          if not a or not b:
+              print("MISMATCH: empty note list"); sys.exit(1)
+          if abs(len(a) - len(b)) > max(2, int(0.05 * max(len(a), len(b)))):
+              print(f"MISMATCH note count {len(a)} vs {len(b)}"); sys.exit(1)
+          for i, (pa, pb) in enumerate(zip(a, b)):
+              if (pa[0] is None) != (pb[0] is None):
+                  print(f"MISMATCH note[{i}] rest-vs-pitch"); sys.exit(1)
+              if pa[0] is not None and abs(pa[0] - pb[0]) > 5:
+                  print(f"MISMATCH note[{i}] pitch {pa[0]} vs {pb[0]}"); sys.exit(1)
+              if abs(pa[1] - pb[1]) > 0.05 or abs(pa[2] - pb[2]) > 0.05:
+                  print(f"MISMATCH note[{i}] time {pa[1]:.2f}/{pa[2]:.2f} vs {pb[1]:.2f}/{pb[2]:.2f}"); sys.exit(1)
+          print(f"OK: {len(a)} notes, F32 vs Q8 within tolerance")
+          PY
+
       - name: Package .oudep (full + quantized variants)
         run: |
           set -euo pipefail
