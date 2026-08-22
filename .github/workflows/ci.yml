@@ -238,9 +238,15 @@ jobs:
           # v2: this repo was renamed (game_ggml_cli -> game.cpp), changing the
           # runner workspace path; old cache entries embed the pre-rename
           # absolute path and must not be restored.
-          key: ${{ matrix.name }}-deps-v2-${{ hashFiles('cmake/Dependencies.cmake') }}
+          # deps-v3: cache-key bump after the ggml v0.20.2 -> v0.19.0 anchor.
+          # GPU jobs restore `_deps` via restore-keys; the old deps-v2 caches
+          # hold v0.20.2-built ggml artifacts and mixing them with the v0.19.0
+          # source breaks the Vulkan build (undefined tq2_0 kernel refs on
+          # Linux, shader custom-build errors on Windows).  v3 prevents those
+          # stale restores while keeping everything else green.
+          key: ${{ matrix.name }}-deps-v3-${{ hashFiles('cmake/Dependencies.cmake') }}
           restore-keys: |
-            ${{ matrix.name }}-deps-v2-
+            ${{ matrix.name }}-deps-v3-
 
       - name: Configure
         run: |
