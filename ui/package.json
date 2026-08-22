@@ -12,6 +12,10 @@
   },
   "author": "KakaruHayate",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KakaruHayate/game.cpp.git"
+  },
   "dependencies": {
     "adm-zip": "^0.5.16"
   },
