@@ -88,11 +88,7 @@ ggml_tensor * cgmlp(ggml_context * ctx,
                     int kernel_size,
                     bool use_dw_act,
                     float norm_eps) {
-    // ----- View 1x1 conv weights as 2D Linear weights -------------------------
-    // PyTorch Conv1d(D, 2L, kernel_size=1) weight has shape (2L, D, 1); stored
-    // row-major this is identical to a Linear weight of shape (2L, D).  In
-    // ggml terms, the original tensor has ne=(1, D, 2L) and we reshape-view to
-    // ne=(D, 2L).  Same trick for pw2: ne=(1, L, D) -> (L, D).
+    // 1x1 Conv1D weights are just Linear weights: reshape (1, in, out) -> (in, out).
     assert(w_pw1->ne[0] == 1);
     assert(w_pw2->ne[0] == 1);
     ggml_tensor * w_pw1_2d = ggml_reshape_2d(ctx, w_pw1, w_pw1->ne[1], w_pw1->ne[2]);

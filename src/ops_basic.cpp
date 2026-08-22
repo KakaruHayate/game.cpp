@@ -67,12 +67,8 @@ ggml_tensor * dwconv_1d(ggml_context * ctx,
                         ggml_tensor * x,
                         int kernel_size,
                         int pad) {
-    // Runtime override for debugging / A-B comparison:
-    //   GAME_GGML_DWCONV=legacy  forces the im2col path on any backend.
-    //   GAME_GGML_DWCONV=direct requests the dedicated kernel, but only if
-    //   the backend actually supports it (g_direct_dwconv was set by the
-    //   backend capability check at model load) — this env value never
-    //   enables a path the backend cannot run.  Unknown values are ignored.
+    // GAME_GGML_DWCONV=legacy forces im2col; =direct requests the dedicated
+    // kernel (no-op unless the backend supports it). Unknown values ignored.
     bool direct = g_direct_dwconv;
     if (const char * env = std::getenv("GAME_GGML_DWCONV"); env && *env) {
         if (std::strcmp(env, "legacy") == 0) {

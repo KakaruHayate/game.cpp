@@ -6,11 +6,11 @@ the CPU/GPU backend wiring, **read this first**.
 
 ---
 
-## 1. ggml version gate — stay on v0.20.2, keep the CPU config frozen (hard rule)
+## 1. ggml version gate — stay on v0.19.0 (temporary anchor, hard rule)
 
-The project pins **ggml `v0.20.2`** (`cmake/Dependencies.cmake`, URL archive)
-and builds the CI CPU package as a **non-DL portable baseline with
-`GGML_NATIVE=OFF`**.  This is load-bearing:
+The project pins **ggml `v0.19.0`** (`cmake/Dependencies.cmake`, `GIT_TAG`)
+and builds the CI CPU package with **`GGML_NATIVE=ON`** (captures the runner
+CPU — that is why that job is never cached).  This is load-bearing:
 
 - v0.20.x turned `GGML_CPU_ALL_VARIANTS` into **dlopen MODULE plugins**
   (`GGML_BACKEND_DL`), and DL mode does **not** link the CPU backend into the
@@ -22,10 +22,10 @@ and builds the CI CPU package as a **non-DL portable baseline with
 - `GGML_NATIVE` and `GGML_BACKEND_DL` are mutually exclusive upstream
   (ggml-cpu CMake `FATAL_ERROR`).
 
-**Therefore:** do **not** flip the CI CPU job to NATIVE/ALL_VARIANTS and do
-**not** downgrade the ggml tag to v0.19.0 "for GGML_NATIVE".  Both are wrong
-until `backend.cpp` is refactored to load the CPU backend via
-`GGML_BACKEND_DL`.  Only after that refactor is the gate eligible for review.
+**Therefore:** do **not** bump the ggml tag to v0.20.x, and do **not** flip the
+CI CPU job to the DL/ALL_VARIANTS portable baseline, until `backend.cpp` is
+refactored to load the CPU backend via `GGML_BACKEND_DL`.  Only after that
+refactor is the gate eligible for review.
 
 When the gate eventually lifts, re-verify:
 1. Both in-repo patches apply to the new tag (`git apply --check` against the
@@ -96,9 +96,10 @@ JIT.  Older toolkits can't compile `120-virtual` — trim the list rather than
 
 ## 7. CPU/macOS cross-arch footguns
 
-- CI `linux-x64-cpu` is a **portable `GGML_NATIVE=OFF` baseline** and must
-  keep working across runner CPU generations (do not rely on NATIVE capture;
-  the `_deps` cache key includes `Dependencies.cmake`).
+- CI `linux-x64-cpu` is **`GGML_NATIVE=ON`** (runner-ISA capture) and must
+  **never** be restored from the `_deps` cache — runners rotate CPU
+  generations and a stale cache ships Illegal-instruction binaries.  The
+  cache step already skips this job; keep it that way.
 - `macos-x64-metal` cross-compile sets `GGML_NATIVE=OFF` — otherwise the CPU
   backend detects the ARM host (`apple-m1`) and fails.
 - NVCC/VS version coupling on Windows is documented in BUILDING.md; don't

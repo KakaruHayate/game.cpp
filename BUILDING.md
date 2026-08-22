@@ -6,11 +6,11 @@ This document covers how to build `game_ggml_cli` from source on Linux, macOS an
 Windows.  The project is self-contained — all dependencies are pulled via CMake
 FetchContent at configure time.
 
-> **⚠ CPU backend version/config gate — ggml `v0.20.2` + `GGML_NATIVE=OFF`**
+> **⚠ CPU backend version/config gate — ggml `v0.19.0` (temporary anchor)**
 >
-> The project runs **ggml `v0.20.2`** with a **non-DL portable baseline CPU
-> package (`GGML_NATIVE=OFF`)**.  This combination is load-bearing — changing
-> it breaks linking:
+> The project is pinned to **ggml `v0.19.0`**; the CI CPU package is built
+> with **`GGML_NATIVE=ON`** (captures the runner ISA).  Do **not** bump to
+> `v0.20.x` until the `backend.cpp` dlopen refactor is done:
 >
 > - v0.20.x turned CPU ISA variants into **dlopen MODULE plugins**
 >   (`GGML_CPU_ALL_VARIANTS` now hard-requires `GGML_BACKEND_DL`), and DL
@@ -18,10 +18,7 @@ FetchContent at configure time.
 >   this project's direct `ggml_backend_cpu_init` / `ggml_threadpool_new` /
 >   `ggml_backend_cpu_set_threadpool` references fail to link.
 > - `GGML_NATIVE` and `GGML_BACKEND_DL` are mutually exclusive upstream, so
->   the portable non-DL CPU job must keep `GGML_NATIVE=OFF`.
-> - Do **not** revert the ggml tag to v0.19.0 for GGML_NATIVE, and do **not**
->   flip the CI CPU job to NATIVE/ALL_VARIANTS, until the `backend.cpp`
->   dlopen refactor is complete.
+>   on v0.20.x you cannot keep NATIVE=ON with the dlopen path anyway.
 >
 > Rationale and the full pitfall list are in [`AGENT.md`](AGENT.md).
 
