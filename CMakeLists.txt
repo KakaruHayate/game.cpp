@@ -11,6 +11,9 @@ option(GAME_GGML_CUDA        "Enable ggml CUDA backend"     OFF)
 option(GAME_GGML_VULKAN      "Enable ggml Vulkan backend"   OFF)
 option(GAME_GGML_BUILD_CLI   "Build game_ggml_cli executable"   ON)
 option(GAME_GGML_BUILD_TESTS "Build unit tests (requires GoogleTest via FetchContent)" OFF)
+# Optional: use ggml-llamafile's tuned sgemm kernels for CPU mul_mat
+# (Q8_0/F32/BF16, AVX2+).  Off yields the stock ggml vec-dot kernels.
+option(GAME_GGML_LLAMAFILE   "Enable ggml-llamafile sgemm kernels (CPU)" ON)
 
 # On Apple, default to Metal backend on. Use GAME_GGML_METAL to override.
 if(APPLE)

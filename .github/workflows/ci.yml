@@ -130,7 +130,12 @@ jobs:
             # x86-64 CPU backend (no -march=native capture of the runner).
             # SIMD dispatch for the CPU package needs a dlopen-path refactor
             # of backend.cpp and is tracked separately.
-            cmake_extra: "-DGGML_NATIVE=OFF"
+            # This job also exercises GGML_LLAMAFILE=ON (project default).
+            # ⚠ Keep GGML_NATIVE=OFF until the dlopen refactor: on v0.20.x
+            # NATIVE is exclusive with GGML_BACKEND_DL, and flipping to
+            # NATIVE=ON + variants would unlink the CPU backend and break
+            # our direct symbols (see AGENT.md "ggml version gate").
+            cmake_extra: "-DGGML_NATIVE=OFF -DGAME_GGML_LLAMAFILE=ON"
             build_jobs: 4
             pkg_ext: ""
             lib_glob: "libggml*.so*"
