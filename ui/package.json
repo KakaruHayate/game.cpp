@@ -1,6 +1,6 @@
 {
   "name": "game-midi-studio",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "GAME (singing-voice-to-MIDI) desktop UI on ggml — import oudep package, input vocals, render & export MIDI",
   "main": "src/main.js",
   "scripts": {
