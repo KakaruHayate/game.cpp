@@ -14,6 +14,9 @@ assets/*.gguf
 __pycache__/
 *.py[cod]
 
+# Benchmark scratch outputs
+bench_out/
+
 # Editor / IDE
 .idea/
 .vscode/
