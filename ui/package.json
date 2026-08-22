@@ -10,7 +10,7 @@
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux"
   },
-  "author": "KakaruHayate",
+  "author": {"name": "KakaruHayate", "email": "kakaru@game-midi-studio.invalid"},
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -43,7 +43,7 @@
       "target": "dmg",
       "category": "public.app-category.music"
     },
-    "linux": {
+    "linux": {"maintainer": "KakaruHayate <kakaru@game-midi-studio.invalid>",
       "target": ["AppImage", "deb"],
       "category": "AudioVideo"
     }
