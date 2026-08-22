@@ -1,0 +1,55 @@
+name: build-ui
+
+# Separate from the oudep-packaging ci.yml: builds the GAME MIDI Studio
+# Electron app (ui/) for Windows/macOS/Linux. Independently triggerable
+# via workflow_dispatch, and auto-runs on pushes touching ui/.
+on:
+  workflow_dispatch: {}
+  push:
+    paths: ['ui/**', '.github/workflows/build-ui.yml']
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: win
+            dist: '--win'
+          - os: macos-latest
+            name: mac
+            dist: '--mac'
+          - os: ubuntu-latest
+            name: linux
+            dist: '--linux'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install deps
+        working-directory: ui
+        run: npm ci
+
+      - name: Package (${{ matrix.dist }})
+        working-directory: ui
+        run: npx electron-builder ${{ matrix.dist }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-midi-studio-${{ matrix.name }}
+          path: ui/dist/*
+          if-no-files-found: error

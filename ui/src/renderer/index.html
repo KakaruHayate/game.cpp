@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; style-src 'unsafe-inline'">
+  <title>GAME MIDI Studio</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>GAME MIDI Studio</h1>
+    <span class="sub">singing-voice → MIDI · on ggml</span>
+  </header>
+
+  <main>
+    <!-- Left: models + input -->
+    <section class="col">
+      <div class="card">
+        <h2>模型 / 引擎 (oudep)</h2>
+        <p class="hint">导入 game.cpp 产出的 <code>.oudep</code> 包（内含 game_ggml_cli 与 GGUF 模型）。</p>
+        <button id="btn-import">导入 .oudep…</button>
+        <p id="pkg-status" class="hint dim"></p>
+        <label>模型 <select id="sel-model"></select></label>
+        <label>语言 <select id="sel-lang"></select></label>
+        <button id="btn-remove-pkg" class="linklike">移除当前包</button>
+      </div>
+
+      <div class="card">
+        <h2>人声输入</h2>
+        <input type="file" id="file-audio" accept="audio/*,video/*,.wav,.mp3,.flac,.m4a,.aac,.ogg,.opus,.mp4,.mov,.webm">
+        <p id="audio-info" class="dim">未选择音频</p>
+        <canvas id="waveform" width="480" height="90"></canvas>
+        <p class="hint">自动解码任意常见格式并重采样至 44.1 kHz 单声道（引擎输入要求）。</p>
+      </div>
+    </section>
+
+    <!-- Right: render + visualization -->
+    <section class="col col-wide">
+      <div class="card">
+        <h2>渲染 MIDI</h2>
+        <div class="row">
+          <label>Tempo <input type="number" id="in-tempo" value="120" min="20" max="400"></label>
+          <label>nsteps <select id="in-nsteps"><option value="1">1（快速）</option><option value="8" selected>8（高质量）</option></select></label>
+          <label>Seed <input type="number" id="in-seed" value="42"></label>
+        </div>
+        <button id="btn-render" disabled>渲染 → MIDI</button>
+        <p id="render-status" class="hint dim"></p>
+      </div>
+
+      <div class="card grow">
+        <h2>可视化 <span id="viz-title" class="dim"></span></h2>
+        <canvas id="piano" width="900" height="260"></canvas>
+        <p class="hint dim" id="viz-empty">渲染后在此显示音符 / Pitch 曲线。</p>
+      </div>
+
+      <div class="row">
+        <button id="btn-export" disabled>导出 .mid</button>
+        <button id="btn-open-folder" disabled>打开输出目录</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
