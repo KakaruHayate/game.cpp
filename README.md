@@ -354,8 +354,8 @@ trees live under `build/_deps/<name>-src/` after the first configure.
 | [GoogleTest](https://github.com/google/googletest) | `v1.14.0` tag (tests only) | BSD-3-Clause | BSD-3-Clause |
 
 Each upstream LICENSE file is preserved under `build/_deps/<name>-src/LICENSE*`
-after download.  To update a dependency, change its `GIT_TAG` in
-`cmake/Dependencies.cmake` and reconfigure.
+after download.  To update a dependency, change its `GIT_TAG` (or ggml's
+`URL`/`URL_HASH`) in `cmake/Dependencies.cmake` and reconfigure.
 
 ## License
 

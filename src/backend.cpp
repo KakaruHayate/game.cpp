@@ -50,7 +50,7 @@ const char * version_string() noexcept {
 }
 
 const char * ggml_version_string() noexcept {
-    // Report the tag pinned in cmake/Dependencies.cmake (GIT_TAG) so
+    // Report the tag pinned in cmake/Dependencies.cmake (URL + URL_HASH) so
     // --version cannot silently drift.  TEMPORARY ANCHOR: v0.19.0.
     return "v0.19.0";
 }

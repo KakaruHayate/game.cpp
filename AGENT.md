@@ -8,7 +8,7 @@ the CPU/GPU backend wiring, **read this first**.
 
 ## 1. ggml version gate — stay on v0.19.0 (temporary anchor, hard rule)
 
-The project pins **ggml `v0.19.0`** (`cmake/Dependencies.cmake`, `GIT_TAG`)
+The project pins **ggml `v0.19.0`** (`cmake/Dependencies.cmake`, URL + `URL_HASH`)
 and builds the CI CPU package with **`GGML_NATIVE=ON`** (captures the runner
 CPU — that is why that job is never cached).  This is load-bearing:
 

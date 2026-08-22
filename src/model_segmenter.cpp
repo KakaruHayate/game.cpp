@@ -164,7 +164,10 @@ SegmenterTailOutputs build_segmenter_tail_graph(
     int fn_blocks,
     int end_blocks)
 {
-    if (end_blocks <= 0 || end_blocks > cfg.segmenter.num_layers) {
+    // Only coerce invalid bounds (negative / past the end); end_blocks == 0
+    // is a valid *empty* slice (DBCache middle range when nb covers the tail),
+    // which would otherwise coerce to num_layers and run the tail twice.
+    if (end_blocks < 0 || end_blocks > cfg.segmenter.num_layers) {
         end_blocks = cfg.segmenter.num_layers;
     }
     ggml_tensor * x = x_front;

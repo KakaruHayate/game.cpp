@@ -287,7 +287,7 @@ ctest --test-dir ggml_backend/build --output-on-failure
 | [dr_libs](https://github.com/mackron/dr_libs) | `master` 分支 `243e26ff` | Public Domain / MIT-0（双许可） | `Unlicense OR MIT-0` |
 | [GoogleTest](https://github.com/google/googletest) | `v1.14.0` tag（仅测试） | BSD-3-Clause | BSD-3-Clause |
 
-每个上游 LICENSE 文件在下载后保留于 `build/_deps/<name>-src/LICENSE*`。更新依赖：改 `cmake/Dependencies.cmake` 中的 `GIT_TAG` 后重新 configure。
+每个上游 LICENSE 文件在下载后保留于 `build/_deps/<name>-src/LICENSE*`。更新依赖：改 `cmake/Dependencies.cmake` 中的 `GIT_TAG`（ggml 则是 `URL`/`URL_HASH`）后重新 configure。
 
 ## 许可
 
